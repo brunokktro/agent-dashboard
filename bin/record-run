@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# record-run - universal adapter: run any command and record it in the
+# dashboard's runs.db. Works with cron, launchd, Claude Code hooks, Makefiles.
+#
+# Usage:
+#   record-run <job-id> <command> [args...]
+#   AGENTS_DIR=~/.kiro/agents record-run nightly-backup ./backup.sh
+#
+# Records: job_id, started_at, duration_sec, status (success/failed),
+# exit_code and a log file under $AGENTS_DIR/logs/.
+set -uo pipefail
+
+AGENTS_DIR="${AGENTS_DIR:-$HOME/.kiro/agents}"
+DB="$AGENTS_DIR/runs.db"
+LOG_DIR="$AGENTS_DIR/logs"
+JOB_ID="${1:?usage: record-run <job-id> <command> [args...]}"
+shift
+
+mkdir -p "$LOG_DIR"
+LOG="$LOG_DIR/${JOB_ID}-$(date +%Y-%m-%d).log"
+STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
+START_EPOCH=$(date +%s)
+
+sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+job_id TEXT, started_at TEXT, duration_sec INTEGER, status TEXT, exit_code INTEGER, log_path TEXT)"
+
+echo "[$STARTED_AT] === record-run start: job=$JOB_ID cmd=$* ===" >> "$LOG"
+"$@" >> "$LOG" 2>&1
+EXIT_CODE=$?
+DURATION=$(( $(date +%s) - START_EPOCH ))
+STATUS=$([ $EXIT_CODE -eq 0 ] && echo success || echo failed)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] === record-run end: exit=$EXIT_CODE status=$STATUS duration=${DURATION}s ===" >> "$LOG"
+
+sqlite3 "$DB" "INSERT INTO runs (job_id, started_at, duration_sec, status, exit_code, log_path) \
+VALUES ('$JOB_ID', '$STARTED_AT', $DURATION, '$STATUS', $EXIT_CODE, 'logs/$(basename "$LOG")')"
+
+exit $EXIT_CODE
