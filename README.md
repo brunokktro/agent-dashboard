@@ -26,7 +26,7 @@ This dashboard is the observability half of that missing layer: not a wrapper ar
 
 - **macOS** - fully supported.
 - **Linux** - fully supported (validated end-to-end on Ubuntu 24.04 / EC2).
-- **Windows** - via WSL2 (the terminals and pipe mode use Unix PTYs).
+- **Windows** - via WSL2 (the terminals and pipe mode use Unix PTYs). Note: WSL2 shuts a distro down when its last process exits, so run the server in a session you keep open (a terminal window, `tmux`, or a systemd unit with `systemd=true` in `/etc/wsl.conf`).
 
 ## Feature tour
 
