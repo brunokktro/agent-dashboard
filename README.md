@@ -6,16 +6,21 @@ Watch your agents live: what ran, what failed and *why*, what's queued, when eve
 
 ![Overview](docs/img/overview.png)
 
-## Why
+## Why - your AI agents need infrastructure too
 
-If you run scheduled AI agents on your machine, their state is scattered across log files, a SQLite database and queue folders. This dashboard turns those artifacts into a live, beautiful control room - **without touching your agents**. It is a pure consumer: the only writes are queue actions (retry / cancel / enqueue) and alert acknowledgements.
+Running AI agents locally sounds simple - until you need scheduling, concurrency control, crash recovery and observability. Without infrastructure, agents are **fragile scripts that silently fail, leak processes and produce inconsistent results**.
 
-- 🏠 **Local-first** - your data never leaves your machine. No cloud, no account, no telemetry.
+This dashboard is the observability half of that missing layer: not a wrapper around an LLM, but **DevOps for AI agents** - the gap between "I have a prompt" and "I have reliable automation".
+
+> "I went from 'run a script and hope' to a self-managing fleet of agents with full observability." - the itch this project scratches
+
+- 🏠 **Local-first** - your data never leaves your machine. No cloud dependency, no account, no telemetry.
 - ⚡ **Real-time** - a WebSocket event channel updates every open page within ~1 second.
-- 🔍 **Failure diagnosis** - one click explains a failed run: exit-code meaning, the run's own log segment, and known-pattern detection (expired auth, missing deps, timeouts, rate limits...).
+- 🔍 **Failure diagnosis** - one click explains a failed run: exit-code meaning, the run's own log segment, and known-pattern detection (expired auth, missing deps, timeouts, rate limits...). Every run logged, every failure categorized.
 - 🖥️ **Multi-terminal console** - up to 6 simultaneous PTY sessions that **survive page refreshes**, with a broadcast bar to ask all agents the same thing.
-- 🔗 **Pipe mode** - chain agents: the output of one becomes the prompt of the next, with an animated flow view, live streaming and visible hand-offs. Jobs survive restarts.
-- 📅 **A real scheduler view** - if your agents run on plain cron (launchd, crontab), the Supervisor gives them what cron never had: plain-English schedules, next-run countdowns, failure pinning, one-click runs, inline cron editing and enable/disable - an organized control plane for even the simplest cron setup.
+- 🔗 **Pipe mode** - multi-agent orchestration made visible: chain agents so the output of one becomes the prompt of the next, with an animated flow view, live streaming and visible hand-offs.
+- 📅 **A real scheduler view** - if your agents run on plain cron (launchd, crontab), the Supervisor gives them what cron never had: plain-English schedules, next-run countdowns, failure pinning, one-click runs, inline cron editing and enable/disable.
+- 📦 **Battle-tested at scale** - born from an ecosystem of 20+ autonomous agents running on a single laptop with zero manual maintenance: the dashboard is how that fleet stays observable.
 
 ## Platform support
 
