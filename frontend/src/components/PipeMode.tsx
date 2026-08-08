@@ -39,7 +39,7 @@ export default function PipeMode({ agents: agentsProp }: { agents: string[] }) {
 
   // resume a job that kept running server-side across refresh/navigation
   useEffect(() => {
-    const saved = localStorage.getItem("pipe-job")
+    const saved = new URLSearchParams(location.search).get("job") || localStorage.getItem("pipe-job")
     if (saved) { setJobStatus("running"); poll(saved) }
     return () => { if (timer.current) clearInterval(timer.current) }
     // eslint-disable-next-line react-hooks/exhaustive-deps

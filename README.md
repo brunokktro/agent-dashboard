@@ -17,7 +17,11 @@ If you run scheduled AI agents on your machine, their state is scattered across 
 - 🔗 **Pipe mode** - chain agents: the output of one becomes the prompt of the next, with an animated flow view, live streaming and visible hand-offs. Jobs survive restarts.
 - 📅 **A real scheduler view** - if your agents run on plain cron (launchd, crontab), the Supervisor gives them what cron never had: plain-English schedules, next-run countdowns, failure pinning, one-click runs, inline cron editing and enable/disable - an organized control plane for even the simplest cron setup.
 
-**Platform support:** macOS and Linux fully supported (validated on Ubuntu 24.04); Windows via WSL2 (terminals and pipe use Unix PTYs).
+## Platform support
+
+- **macOS** - fully supported.
+- **Linux** - fully supported (validated end-to-end on Ubuntu 24.04 / EC2).
+- **Windows** - via WSL2 (the terminals and pipe mode use Unix PTYs).
 
 ## Feature tour
 
