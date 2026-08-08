@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import json
 import os
 import pty as _pty
 import re
+import struct
+import termios
 import time
 import uuid
 from typing import Annotated
@@ -30,6 +33,15 @@ _jobs: dict[str, dict] = {}
 
 STEP_TIMEOUT = 600  # 10 min per agent
 MAX_OUT = 12_000
+# A fresh pty is born 0x0. A CLI that wraps to the terminal width then breaks
+# its output into one-word lines (a 25-line answer became 237 "lines"), so the
+# window has to be set explicitly before the child starts.
+PTY_ROWS, PTY_COLS = 50, 200
+
+
+def _set_pty_size(fd: int, rows: int = PTY_ROWS, cols: int = PTY_COLS) -> None:
+    with contextlib.suppress(OSError):
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
 class PipeRequest(BaseModel):
@@ -68,6 +80,7 @@ async def _run_chain(settings: Settings, job_id: str) -> None:
         try:
             # PTY: kiro-cli line-buffers only on a tty -> real live streaming
             master, slave = _pty.openpty()
+            _set_pty_size(slave)  # 0x0 would wrap the output one word per line
             proc = await asyncio.create_subprocess_exec(
                 "kiro-cli", "chat", "--agent", step["agent"],
                 "--no-interactive", "--trust-all-tools",

@@ -30,6 +30,9 @@ router = APIRouter()
 
 IDLE_TTL = 15 * 60  # keep detached PTYs for 15 minutes
 BUFFER_BYTES = 200_000
+# A pty is born 0x0, so anything the shell prints before xterm.js sends its
+# first resize would wrap one word per line. Start from a sane window.
+INITIAL_ROWS, INITIAL_COLS = 24, 100
 
 
 # ── Log endpoints ────────────────────────────────────────────────────
@@ -101,6 +104,10 @@ def _spawn(session_id: str) -> PtySession:
     shell = os.environ.get("SHELL", "/bin/zsh")
     pid, fd = pty.fork()
     if pid == 0:  # child
+        # set the window before exec so the first prompt is not wrapped at 0 cols
+        with contextlib.suppress(OSError):
+            fcntl.ioctl(0, termios.TIOCSWINSZ,
+                        struct.pack("HHHH", INITIAL_ROWS, INITIAL_COLS, 0, 0))
         os.chdir(Path.home())
         os.execvp(shell, [shell, "-l"])
         raise SystemExit(0)

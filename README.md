@@ -44,7 +44,17 @@ Per-agent observability: 30-day P50/P95/P99 duration percentiles and success-rat
 
 ## Quick start
 
-Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20+.
+Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20+, `sqlite3` CLI (only needed by `bin/record-run`).
+
+<details><summary>Debian/Ubuntu one-liner (including WSL2)</summary>
+
+```bash
+sudo apt-get update && sudo apt-get install -y git sqlite3 curl python3-venv
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+Note: install `python3-venv` (unversioned) - pinning a version like `python3.12-venv` breaks on newer Ubuntu releases that ship a different Python.
+</details>
 
 ```bash
 git clone https://github.com/brunokktro/agent-dashboard.git

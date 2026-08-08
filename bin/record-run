@@ -16,6 +16,8 @@ LOG_DIR="$AGENTS_DIR/logs"
 JOB_ID="${1:?usage: record-run <job-id> <command> [args...]}"
 shift
 
+command -v sqlite3 >/dev/null || { echo "record-run: sqlite3 is required (apt install sqlite3 / brew install sqlite)" >&2; exit 127; }
+
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/${JOB_ID}-$(date +%Y-%m-%d).log"
 STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
