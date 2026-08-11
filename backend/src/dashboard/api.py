@@ -438,6 +438,145 @@ def edit_cron(job_id: str, body: CronBody, store: Store,
     return {"ok": True, "cron": cron}
 
 
+# ── Backlog actions (v2 parity: decide on review notes from the UI) ─
+
+
+class BacklogFileBody(BaseModel):
+    file: str
+
+
+class AutonomyBody(BacklogFileBody):
+    autonomy: str
+
+
+class DiscussBody(BacklogFileBody):
+    feedback: str
+
+
+class RejectBody(BacklogFileBody):
+    reason: str = ""
+
+
+class DeleteBody(BacklogFileBody):
+    bucket: str = "active"
+
+
+def _safe_md(file: str) -> str:
+    """Reject path traversal; backlog files are bare *.md names."""
+    from pathlib import Path as _P
+    if file != _P(file).name or not file.endswith(".md"):
+        raise HTTPException(400, "invalid filename")
+    return file
+
+
+def _set_frontmatter_field(path, field: str, value: str) -> None:
+    """Set (replace or append) one frontmatter field, creating the block if absent."""
+    import re as _re
+    text = path.read_text(errors="replace")
+    fm = _re.match(r"^---\s*\n(.*?)\n---\s*\n", text, _re.DOTALL)
+    if fm:
+        body = fm.group(1)
+        if _re.search(rf"^{field}:\s*.*$", body, _re.MULTILINE):
+            new_body = _re.sub(rf"^{field}:\s*.*$", f"{field}: {value}", body,
+                               count=1, flags=_re.MULTILINE)
+        else:
+            new_body = body.rstrip() + f"\n{field}: {value}"
+        text = text.replace(fm.group(0), f"---\n{new_body}\n---\n", 1)
+    else:
+        text = f"---\n{field}: {value}\n---\n\n" + text
+    path.write_text(text)
+
+
+def _set_note_feedback(path, label: str, message: str) -> None:
+    """Replace or append the '## Human feedback' section of a review note."""
+    import re as _re
+    text = path.read_text(errors="replace")
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    block = f"## Human feedback\n\n> {label} {stamp}:\n\n{message}\n"
+    if _re.search(r"^## Human feedback\b", text, _re.MULTILINE):
+        text = _re.sub(r"^## Human feedback\n.*?(?=^## |\Z)", block + "\n",
+                       text, count=1, flags=_re.DOTALL | _re.MULTILINE)
+    else:
+        text = text.rstrip() + "\n\n" + block
+    path.write_text(text)
+
+
+@router.post("/api/backlog/autonomy")
+def backlog_autonomy(body: AutonomyBody,
+                     settings: Annotated[Settings, Depends(get_settings)]):
+    """Change a backlog item's autonomy via its frontmatter (auto/review/blocked)."""
+    value = body.autonomy.strip().lower()
+    if value not in ("auto", "review", "blocked"):
+        raise HTTPException(422, "invalid autonomy (use auto/review/blocked)")
+    path = settings.agents_dir / "backlog" / _safe_md(body.file)
+    if not path.is_file():
+        raise HTTPException(404, "backlog item not found")
+    _set_frontmatter_field(path, "autonomy", value)
+    return {"ok": True, "autonomy": value}
+
+
+@router.post("/api/backlog/review-note/approve")
+def review_note_approve(body: BacklogFileBody,
+                        settings: Annotated[Settings, Depends(get_settings)]):
+    """Approve: flip the BACKLOG ITEM's autonomy to auto. Next meta-agent run applies."""
+    path = settings.agents_dir / "backlog" / _safe_md(body.file)
+    if not path.is_file():
+        raise HTTPException(404, "backlog item not found")
+    _set_frontmatter_field(path, "autonomy", "auto")
+    return {"ok": True, "message": "approved - will apply on next meta-agent run"}
+
+
+@router.post("/api/backlog/review-note/discuss")
+def review_note_discuss(body: DiscussBody,
+                        settings: Annotated[Settings, Depends(get_settings)]):
+    """Send feedback: note status -> discussing + Human feedback section."""
+    if not body.feedback.strip():
+        raise HTTPException(422, "feedback is required")
+    path = settings.agents_dir / "backlog" / "review-notes" / _safe_md(body.file)
+    if not path.is_file():
+        raise HTTPException(404, "review note not found")
+    _set_frontmatter_field(path, "status", "discussing")
+    _set_note_feedback(path, "Added", body.feedback.strip())
+    return {"ok": True, "message": "feedback saved - will regenerate on next meta-agent run"}
+
+
+@router.post("/api/backlog/review-note/reject")
+def review_note_reject(body: RejectBody,
+                       settings: Annotated[Settings, Depends(get_settings)]):
+    """Reject: note status -> rejected. The agent will NOT regenerate it."""
+    path = settings.agents_dir / "backlog" / "review-notes" / _safe_md(body.file)
+    if not path.is_file():
+        raise HTTPException(404, "review note not found")
+    _set_frontmatter_field(path, "status", "rejected")
+    if body.reason.strip():
+        _set_note_feedback(path, "Rejected", body.reason.strip())
+    return {"ok": True, "message": "rejected - agent will not regenerate"}
+
+
+@router.post("/api/backlog/delete")
+def backlog_delete(body: DeleteBody,
+                   settings: Annotated[Settings, Depends(get_settings)]):
+    """Soft-delete: move the item (and its review note, if any) to deleted/ folders."""
+    file = _safe_md(body.file)
+    base = settings.agents_dir / "backlog"
+    src = (base / "done" / file) if body.bucket == "done" else (base / file)
+    if not src.is_file():
+        raise HTTPException(404, "backlog item not found")
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+    stem = file[:-3]
+    deleted = base / "deleted"
+    deleted.mkdir(parents=True, exist_ok=True)
+    src.rename(deleted / f"{stem}-{ts}.md")
+    note = base / "review-notes" / file
+    note_moved = False
+    if note.is_file():
+        note_deleted = base / "review-notes" / "deleted"
+        note_deleted.mkdir(parents=True, exist_ok=True)
+        note.rename(note_deleted / f"{stem}-{ts}.md")
+        note_moved = True
+    return {"ok": True, "note_moved": note_moved}
+
+
 @router.get("/api/backlog/item")
 def backlog_item(bucket: str, file: str,
                  settings: Annotated[Settings, Depends(get_settings)]):

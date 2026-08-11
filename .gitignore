@@ -7,3 +7,5 @@ node_modules/
 dist/
 .env
 .hypothesis/
+# local-only notes (never published: reference local paths / internal ecosystem)
+*.local.md
