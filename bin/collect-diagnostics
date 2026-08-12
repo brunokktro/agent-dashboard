@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# collect-diagnostics - one-shot environment report for dashboard-support.
+#
+# Prints everything the support agent needs to diagnose an install, in one
+# paste-able block. Safe by design:
+#   - a missing binary is REPORTED, never a failure (exit is always 0 unless
+#     the script itself is broken)
+#   - no secrets: it never dumps the raw environment, tokens, cookies or
+#     credential files - env vars are reported as SET/UNSET only
+#   - read-only: it writes nothing anywhere
+#
+# Usage:
+#   bin/collect-diagnostics            # human-readable report on stdout
+#   bin/collect-diagnostics > diag.txt # attach/paste the file in the support DM
+set -u
+
+DASHBOARD_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+AGENTS_DIR="${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}"
+PORT="${DASHBOARD_PORT:-7780}"
+
+section() { printf '\n== %s ==\n' "$1"; }
+have()    { command -v "$1" >/dev/null 2>&1; }
+ver()     { if have "$1"; then "$@" 2>&1 | head -1; else echo "MISSING: $1"; fi; }
+
+echo "collect-diagnostics $(date '+%Y-%m-%d %H:%M:%S')"
+
+section "platform"
+uname -srm
+if [ "$(uname -s)" = "Darwin" ]; then
+  have sw_vers && echo "macOS $(sw_vers -productVersion)"
+elif [ -f /proc/version ]; then
+  grep -qi microsoft /proc/version && echo "WSL2 detected (service-lifetime trap applies)"
+fi
+
+section "runtimes"
+ver python3 --version
+ver uv --version
+ver node --version
+ver npm --version
+ver sqlite3 --version
+
+section "repo state"
+echo "repo dir: $DASHBOARD_DIR"
+if [ -f "$DASHBOARD_DIR/frontend/dist/index.html" ]; then
+  echo "frontend/dist: built ($(stat -f '%Sm' "$DASHBOARD_DIR/frontend/dist/index.html" 2>/dev/null \
+    || stat -c '%y' "$DASHBOARD_DIR/frontend/dist/index.html" 2>/dev/null))"
+else
+  echo "frontend/dist: NOT BUILT (run: cd frontend && npm install && npm run build)"
+fi
+[ -d "$DASHBOARD_DIR/backend/.venv" ] \
+  && echo "backend/.venv: present" \
+  || echo "backend/.venv: MISSING (run: cd backend && uv sync)"
+
+section "observed ecosystem"
+echo "DASHBOARD_AGENTS_DIR: $([ -n "${DASHBOARD_AGENTS_DIR:-}" ] && echo "SET -> $AGENTS_DIR" || echo "UNSET (default $AGENTS_DIR)")"
+if [ -d "$AGENTS_DIR" ]; then
+  echo "agents dir: exists"
+  # shellcheck disable=SC2012
+  echo "agent specs (*.md): $(ls "$AGENTS_DIR"/*.md 2>/dev/null | wc -l | tr -d ' ')"
+  [ -f "$AGENTS_DIR/runs.db" ] \
+    && echo "runs.db: present ($(du -h "$AGENTS_DIR/runs.db" 2>/dev/null | cut -f1 | tr -d ' '))" \
+    || echo "runs.db: absent (expected on a fresh install - record the first run with bin/record-run)"
+else
+  echo "agents dir: DOES NOT EXIST ($AGENTS_DIR)"
+fi
+
+section "port $PORT"
+if have lsof; then
+  lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sed 1d | awk '{print "LISTENING: pid "$2" ("$1")"}' \
+    | grep . || echo "free"
+elif have ss; then
+  ss -ltnp "sport = :$PORT" 2>/dev/null | sed 1d | grep . || echo "free"
+else
+  echo "cannot check (no lsof, no ss)"
+fi
+
+section "server answers?"
+if have curl; then
+  CODE=$(curl -fsS -o /dev/null -w '%{http_code} %{content_type}' \
+    --max-time 5 "http://127.0.0.1:$PORT/" 2>/dev/null) \
+    && echo "GET / -> $CODE" || echo "GET / -> no answer"
+  curl -fsS --max-time 5 "http://127.0.0.1:$PORT/api/overview" 2>/dev/null \
+    | head -c 120 | grep -q '"agents"' && echo "GET /api/overview -> JSON with agents key" \
+    || echo "GET /api/overview -> no valid answer"
+else
+  echo "MISSING: curl (cannot probe the server)"
+fi
+
+section "npm registry sanity"
+# E401/E403 on npm install usually means a custom registry with a stale token.
+# Report WHICH registry is configured - never the token itself.
+if have npm; then
+  REG=$(npm config get registry 2>/dev/null)
+  echo "registry: $REG"
+  case "$REG" in
+    https://registry.npmjs.org*) : ;;
+    *) echo "note: non-default registry - E401/E403 during npm install means its auth expired" ;;
+  esac
+fi
+
+echo
+echo "done. Paste this whole output (it contains no secrets) in the support conversation."

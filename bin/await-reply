@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# await-reply - bounded wait window for an asynchronous human reply.
+#
+# Polls a caller-supplied fetch command until it prints something on stdout or
+# until the window closes. Transport-agnostic on purpose: the fetch command is
+# whatever your environment uses to read new messages from a conversation
+# (a chat MCP client, a vendor CLI, a curl call, your own script).
+#
+# Contract with the fetch command:
+#   - print NEW material (message text, file path) on stdout, nothing when idle
+#   - exit 0 when the check itself succeeded, non-zero when it failed
+#   A failed check is NOT the same as "no reply" - see exit code 4.
+#
+# Usage:
+#   await-reply [--timeout SEC] [--interval SEC] [--quiet] -- <fetch-cmd> [args...]
+#
+# Examples:
+#   await-reply -- ./read-new-messages.sh "$CONVERSATION_ID"
+#   await-reply --timeout 300 --interval 20 -- my-chat-cli read --since-last --dm "$USER_ID"
+#
+# Exit codes:
+#   0  reply received - the payload is on stdout
+#   3  window closed with no reply - send your closing message and stop
+#   4  every poll failed - state UNKNOWN, do not report "no reply"
+#   2  usage error
+set -uo pipefail
+
+TIMEOUT=300
+INTERVAL=15
+QUIET=0
+
+usage() {
+  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-2}"
+}
+
+log() { [ "$QUIET" -eq 1 ] || echo "await-reply: $*" >&2; }
+
+is_positive_int() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ]; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --timeout)  is_positive_int "${2:-}" || { echo "await-reply: --timeout needs a positive integer" >&2; exit 2; }; TIMEOUT="$2"; shift 2 ;;
+    --interval) is_positive_int "${2:-}" || { echo "await-reply: --interval needs a positive integer" >&2; exit 2; }; INTERVAL="$2"; shift 2 ;;
+    --quiet)    QUIET=1; shift ;;
+    -h|--help)  usage 0 ;;
+    --)         shift; break ;;
+    *)          echo "await-reply: unknown option '$1' (fetch command goes after --)" >&2; exit 2 ;;
+  esac
+done
+
+[ $# -gt 0 ] || { echo "await-reply: missing fetch command after --" >&2; usage 2; }
+
+OUT="$(mktemp -t await-reply)"
+ERR="$(mktemp -t await-reply-err)"
+trap 'rm -f "$OUT" "$ERR"' EXIT
+
+DEADLINE=$(( $(date +%s) + TIMEOUT ))
+POLL=0
+OK_POLLS=0
+FAILED_POLLS=0
+
+log "window open: ${TIMEOUT}s, polling every ${INTERVAL}s"
+
+while :; do
+  POLL=$(( POLL + 1 ))
+  : > "$OUT"
+  : > "$ERR"
+  "$@" > "$OUT" 2> "$ERR"
+  RC=$?
+
+  if [ $RC -ne 0 ]; then
+    FAILED_POLLS=$(( FAILED_POLLS + 1 ))
+    log "poll $POLL: fetch FAILED (exit $RC) - $(tr '\n' ' ' < "$ERR" | cut -c1-200)"
+  elif [ -s "$OUT" ] && grep -q '[^[:space:]]' "$OUT"; then
+    log "poll $POLL: reply received after $(( TIMEOUT - (DEADLINE - $(date +%s)) ))s"
+    cat "$OUT"
+    exit 0
+  else
+    OK_POLLS=$(( OK_POLLS + 1 ))
+    log "poll $POLL: no reply yet ($(( DEADLINE - $(date +%s) ))s left)"
+  fi
+
+  REMAINING=$(( DEADLINE - $(date +%s) ))
+  [ "$REMAINING" -gt 0 ] || break
+  sleep "$(( INTERVAL < REMAINING ? INTERVAL : REMAINING ))"
+done
+
+if [ "$OK_POLLS" -eq 0 ] && [ "$FAILED_POLLS" -gt 0 ]; then
+  log "every poll failed ($FAILED_POLLS attempts) - reply state UNKNOWN"
+  exit 4
+fi
+
+log "window closed after ${TIMEOUT}s with no reply"
+exit 3

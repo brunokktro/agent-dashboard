@@ -102,3 +102,25 @@ def test_load_agents_folded_description(ecosystem):
         "  across two lines.\ntools: [read]\n---\n# G\n")
     agents = Datastore(ecosystem).load_agents()
     assert agents["gamma-agent"]["description"] == "Folded description across two lines."
+
+
+def test_future_run_never_becomes_last(store):
+    """Regression: a run stamped in the future (clock skew, UTC container, bad
+    seed) rendered '-5358s ago' on Overview while Supervisor (id DESC) showed
+    another value for the same agent. The future row must not be the 'last'."""
+    from datetime import datetime, timedelta
+
+    with store.db() as conn:
+        future = (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT INTO runs (job_id, started_at, duration_sec, status, exit_code, log_path) "
+            "VALUES (?,?,?,?,?,?)",
+            ("alpha-agent-morning", future, 60, "success", 0, "logs/alpha.log"))
+        conn.commit()
+        stats = store.agent_run_stats(conn, "alpha-agent")
+        last = datetime.strptime(stats["last"]["started_at"], "%Y-%m-%d %H:%M:%S")
+        assert last <= datetime.now(), "future run leaked into 'last'"
+        # the future row is excluded from the stats entirely, not just demoted
+        assert all(
+            datetime.strptime(r["started_at"], "%Y-%m-%d %H:%M:%S") <= datetime.now()
+            for r in stats["recent"] if r["started_at"])

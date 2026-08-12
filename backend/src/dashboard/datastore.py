@@ -88,10 +88,16 @@ class Datastore:
             conn.close()
 
     def agent_run_stats(self, conn: sqlite3.Connection, name: str) -> dict[str, Any]:
+        # A run stamped in the future (clock skew, UTC container, bad seed) must
+        # never become the "last run": it renders a negative relative time and
+        # diverges from views that order by id. NULL started_at rows are kept.
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         rows = conn.execute(
             "SELECT status, duration_sec, started_at FROM runs "
-            "WHERE job_id = ? OR job_id LIKE ? ORDER BY started_at DESC, id DESC",
-            (name, f"{name}-%"),
+            "WHERE (job_id = ? OR job_id LIKE ?) "
+            "AND (started_at IS NULL OR started_at <= ?) "
+            "ORDER BY started_at DESC, id DESC",
+            (name, f"{name}-%", now),
         ).fetchall()
         if not rows:
             return {"total": 0, "ok": 0, "fail": 0, "avg_dur": 0, "last": None,

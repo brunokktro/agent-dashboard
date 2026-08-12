@@ -32,11 +32,28 @@ const AUTONOMY_TONE: Record<string, string> = {
   blocked: "bg-red-500/15 text-red-600",
 }
 
-function ItemCard({ it, onOpen }: { it: Item; onOpen: () => void }) {
+function ItemCard({ it, onOpen, drag }: {
+  it: Item
+  onOpen: () => void
+  drag?: {
+    onDragStart: () => void
+    onDragOver: (e: React.DragEvent) => void
+    onDrop: () => void
+    onDragEnd: () => void
+    dragging: boolean
+  }
+}) {
   return (
     <button
       onClick={onOpen}
-      className="w-full rounded-lg border bg-background p-3 text-left shadow-sm transition-all hover:border-foreground/25 hover:shadow"
+      draggable={!!drag}
+      onDragStart={drag?.onDragStart}
+      onDragOver={drag?.onDragOver}
+      onDrop={drag?.onDrop}
+      onDragEnd={drag?.onDragEnd}
+      className={`w-full rounded-lg border bg-background p-3 text-left shadow-sm transition-all hover:border-foreground/25 hover:shadow ${
+        drag ? "cursor-grab active:cursor-grabbing" : ""
+      } ${drag?.dragging ? "opacity-40" : ""}`}
     >
       <div className="text-sm font-medium leading-snug">{it.title}</div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -309,6 +326,7 @@ function ItemReader({ item, bucket, siblings, onNavigate, onClose }: {
 }
 
 export default function BacklogPage() {
+  const qc = useQueryClient()
   const { data } = useQuery({
     queryKey: ["backlog"],
     queryFn: () => fetch("/api/backlog").then((r) => r.json()),
@@ -316,6 +334,36 @@ export default function BacklogPage() {
   const [search, setSearch] = useState("")
   const [facet, setFacet] = useState<string>("")
   const [open, setOpen] = useState<{ item: Item; bucket: string } | null>(null)
+  const dragFile = useRef<string | null>(null)
+  const [dragging, setDragging] = useState<string | null>(null)
+
+  // Drop `moved` right before `target` inside the FULL active list (not the
+  // filtered view), then persist the whole order and refetch.
+  const reorder = async (target: string) => {
+    const moved = dragFile.current
+    if (!moved || moved === target || !data) return
+    const files = (data.active as Item[]).map((i) => i.file)
+    const from = files.indexOf(moved)
+    if (from < 0) return
+    files.splice(from, 1)
+    const to = files.indexOf(target)
+    files.splice(to < 0 ? files.length : to, 0, moved)
+    const r = await fetch("/api/backlog/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files }),
+    })
+    if (!r.ok) { toast.error(`reorder: HTTP ${r.status}`); return }
+    qc.invalidateQueries({ queryKey: ["backlog"] })
+  }
+
+  const dragProps = (file: string) => ({
+    onDragStart: () => { dragFile.current = file; setDragging(file) },
+    onDragOver: (e: React.DragEvent) => e.preventDefault(),
+    onDrop: () => reorder(file),
+    onDragEnd: () => { dragFile.current = null; setDragging(null) },
+    dragging: dragging === file,
+  })
 
   const filter = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -368,7 +416,9 @@ export default function BacklogPage() {
             <ScrollArea className="min-h-0 flex-1">
               <div className="space-y-2 p-2">
                 {items.map((it) => (
-                  <ItemCard key={it.file} it={it} onOpen={() => setOpen({ item: it, bucket: key })} />
+                  <ItemCard key={it.file} it={it}
+                    onOpen={() => setOpen({ item: it, bucket: key })}
+                    drag={key === "active" ? dragProps(it.file) : undefined} />
                 ))}
                 {items.length === 0 && (
                   <div className="py-10 text-center text-xs text-muted-foreground">Empty</div>

@@ -81,6 +81,53 @@ bin/record-run lint-check npm run lint
 
 Works from cron, launchd, Makefiles, CI, Claude Code hooks. Recorded runs appear everywhere: Overview, Health, heatmap, diagnosis.
 
+## Support agent
+
+`agents/dashboard-support` is an agent that installs and troubleshoots **this** project: a `.md` spec plus a kiro-cli `.json` config, with the command-level playbooks under `agents/dashboard-support-data/references/`. Link both files into your ecosystem and it shows up in the dashboard like any other agent, chat and terminal included:
+
+```bash
+ln -s "$PWD/agents/dashboard-support.md"   "${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}/"
+ln -s "$PWD/agents/dashboard-support.json" "${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}/"
+```
+
+### Guided install - local, self-service
+
+You just cloned the repo and something does not work. The agent detects the actual state of the machine (OS incl. WSL2, Python 3.12+, Node 20+, uv, `sqlite3`, whether `frontend/dist` was built, whether `DASHBOARD_AGENTS_DIR` exists and has a `runs.db`, whether the port is free), reports it as a table, and gives you the exact commands in dependency order - runtimes, then the frontend build, then `uv sync`, then the server.
+
+It knows the traps that are not obvious from the outside: `dist/` is gitignored so there is no UI until you build; WSL2 shuts the distro down when its last process exits; `bin/record-run` needs the `sqlite3` CLI; and an empty dashboard on a fresh install is *correct*, because the dashboard consumes artifacts it does not create.
+
+It closes by validating for real - the server up, an HTTP check on `/` that must return HTML and not just any 200, and a throwaway `record-run` that has to appear in the API. An exit code from an intermediate step is never accepted as success.
+
+The detection phase is also a standalone script - run it yourself and paste the output when asking for help anywhere:
+
+```bash
+bin/collect-diagnostics
+```
+
+It reports platform, runtime versions, build state, ecosystem state, port and server health in one block, treats a missing binary as data rather than a failure, and prints no secrets (environment variables come out as SET/UNSET only).
+
+### Remote troubleshooting - over a chat DM
+
+Hand the agent a Slack user id and it runs the same diagnosis conversationally, asynchronously, in the other person's language (pt-BR, en-US, es - guessed from their profile locale, then mirrored from their reply). It states in the first message that it will wait at most 5 minutes, then waits with a bound instead of hanging.
+
+Which Slack client does the talking is deliberately unspecified: the spec lists the four capabilities it needs (open a DM, post a message, read history since a point, download a file) and you map them to any Slack MCP server configured in your environment. Ids and handles are runtime inputs - the files only ever carry placeholders like `<SLACK_USER_ID>`.
+
+The wait window is a standalone script, usable on its own:
+
+```bash
+bin/await-reply --timeout 300 --interval 15 -- <read-new-messages-command> "<CONVERSATION_ID>"
+```
+
+It polls your fetch command until it prints something, and separates the three outcomes that matter:
+
+| Exit | Meaning |
+|------|---------|
+| `0` | reply received - payload on stdout |
+| `3` | window closed with no reply - send the closing message and stop |
+| `4` | every poll failed - state unknown, do **not** report it as "no reply" |
+
+That last one exists because a failed read reported as silence is a lie that looks like a fact.
+
 ## Configuration
 
 Everything is environment-driven - no hardcoded paths.
@@ -154,6 +201,26 @@ cd backend && uv run pytest && uv run ruff check src tests
 ## Built-in documentation
 
 The **Help tab** inside the app is a full user guide: sidebar navigation, per-feature walkthroughs with screenshots, an onboarding section for Kiro CLI / Claude Code users, the data contracts, and an exit-code cheat-sheet for the failure diagnosis.
+
+## Demo ecosystem - regenerate the screenshots
+
+All screenshots in this README (and in the in-app Help) come from a **generic, deterministic demo ecosystem** - never from anyone's real agents. `demo/seed-demo.py` rebuilds it from scratch:
+
+```bash
+python3 demo/seed-demo.py            # writes to demo/demo-agents/ (gitignored)
+python3 demo/seed-demo.py /tmp/demo  # or anywhere else
+```
+
+It creates 12 fictional agents with specs, configs, a `runs.db` with ~2,300 runs derived from each agent's real cron cadence walking backwards from now, schedule, queue items and logs. Deterministic (fixed seed) and self-checking: it asserts that no run lands in the future - a future-stamped run once rendered `-5358s ago` in a published screenshot, and the assert keeps that bug from coming back.
+
+To capture against it, point the server at the demo tree and use a viewport of 1400x860:
+
+```bash
+cd backend
+DASHBOARD_AGENTS_DIR=../demo/demo-agents uv run uvicorn dashboard.main:app --port 7781
+```
+
+Screenshots land in `docs/img/` AND `frontend/public/help/` (copy first, then `npm run build` - the Help tab serves from `dist/`).
 
 ## Notable design details
 

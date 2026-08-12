@@ -9,3 +9,4 @@ dist/
 .hypothesis/
 # local-only notes (never published: reference local paths / internal ecosystem)
 *.local.md
+demo/demo-agents/

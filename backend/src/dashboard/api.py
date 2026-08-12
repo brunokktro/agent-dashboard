@@ -401,7 +401,16 @@ def api_backlog(settings: Annotated[Settings, Depends(get_settings)]):
                 "agent": meta.get("agent", ""),
                 "priority": meta.get("priority", ""),
                 "created": meta.get("created", ""),
+                "order": meta.get("order", ""),
             })
+
+    def _order_key(item: dict) -> tuple:
+        try:
+            return (0, int(item["order"]), item["file"])
+        except (ValueError, TypeError):
+            return (1, 0, item["file"])
+
+    out["active"].sort(key=_order_key)
     return out
 
 
@@ -575,6 +584,32 @@ def backlog_delete(body: DeleteBody,
         note.rename(note_deleted / f"{stem}-{ts}.md")
         note_moved = True
     return {"ok": True, "note_moved": note_moved}
+
+
+class ReorderBody(BaseModel):
+    files: list[str]
+
+
+@router.post("/api/backlog/reorder")
+def backlog_reorder(body: ReorderBody,
+                    settings: Annotated[Settings, Depends(get_settings)]):
+    """Persist the kanban order: write `order: <index>` into each item's frontmatter.
+
+    Missing files are skipped silently (the board may be stale); the response
+    says how many were actually updated.
+    """
+    if not body.files:
+        raise HTTPException(422, "files is required")
+    base = settings.agents_dir / "backlog"
+    safe = [_safe_md(f) for f in body.files]  # reject traversal BEFORE any write
+    updated = 0
+    for idx, fname in enumerate(safe):
+        path = base / fname
+        if not path.is_file():
+            continue
+        _set_frontmatter_field(path, "order", str(idx))
+        updated += 1
+    return {"ok": True, "updated": updated}
 
 
 @router.get("/api/backlog/item")

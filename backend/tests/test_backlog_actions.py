@@ -131,3 +131,61 @@ def test_actions_404_on_missing_files(client, backlog):
         ("/api/backlog/delete", {"file": "ghost.md"}),
     ]:
         assert client.post(path, json=body).status_code == 404, path
+
+
+# ── Reorder (kanban drag-and-drop persistence) ──────────────────────
+
+
+@pytest.fixture()
+def board(ecosystem):
+    """Three active items, one already carrying an order field."""
+    base = ecosystem.agents_dir / "backlog"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "alpha.md").write_text("---\nautonomy: review\n---\n\n# Alpha\n")
+    (base / "beta.md").write_text("---\nautonomy: review\norder: 7\n---\n\n# Beta\n")
+    (base / "gamma.md").write_text("---\nautonomy: review\n---\n\n# Gamma\n")
+    return base
+
+
+def test_reorder_persists_order_in_frontmatter(client, board):
+    r = client.post("/api/backlog/reorder",
+                    json={"files": ["gamma.md", "alpha.md", "beta.md"]})
+    assert r.status_code == 200 and r.json() == {"ok": True, "updated": 3}
+    assert "order: 0" in (board / "gamma.md").read_text()
+    assert "order: 1" in (board / "alpha.md").read_text()
+    assert "order: 2" in (board / "beta.md").read_text()
+
+
+def test_reorder_overwrites_preexisting_order(client, board):
+    client.post("/api/backlog/reorder", json={"files": ["beta.md"]})
+    text = (board / "beta.md").read_text()
+    assert "order: 0" in text and "order: 7" not in text
+    assert text.count("order:") == 1
+
+
+def test_reorder_skips_missing_files_without_failing(client, board):
+    r = client.post("/api/backlog/reorder",
+                    json={"files": ["alpha.md", "ghost.md", "beta.md"]})
+    assert r.status_code == 200 and r.json()["updated"] == 2
+
+
+def test_reorder_rejects_path_traversal_before_writing(client, board):
+    original = (board / "alpha.md").read_text()
+    r = client.post("/api/backlog/reorder",
+                    json={"files": ["alpha.md", "../secrets.md"]})
+    assert r.status_code == 400
+    # atomic rejection: nothing was written, not even the valid first entry
+    assert (board / "alpha.md").read_text() == original
+
+
+def test_reorder_requires_files(client, board):
+    assert client.post("/api/backlog/reorder", json={"files": []}).status_code == 422
+
+
+def test_backlog_listing_respects_order(client, board):
+    client.post("/api/backlog/reorder",
+                json={"files": ["gamma.md", "beta.md", "alpha.md"]})
+    # a fourth item with no order lands at the end, tie-broken by name
+    (board / "delta.md").write_text("---\nautonomy: review\n---\n\n# Delta\n")
+    files = [i["file"] for i in client.get("/api/backlog").json()["active"]]
+    assert files == ["gamma.md", "beta.md", "alpha.md", "delta.md"]
