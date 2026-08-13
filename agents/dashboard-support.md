@@ -72,24 +72,66 @@ checked and what could not be.
 
 ### Fix order
 
-1. Missing runtime (Python, Node, uv, sqlite3) - install those first, nothing else works.
+Reach for the command, never the manual sequence - each is non-destructive and
+safe to re-run:
+
+1. Missing runtime (Python 3.12+, Node 20+, uv, sqlite3) - nothing else works first.
 2. `cd frontend && npm install && npm run build` - FastAPI serves `dist/`.
 3. `cd backend && uv sync`.
 4. `DASHBOARD_AGENTS_DIR=<dir> uv run uvicorn dashboard.main:app --port ${DASHBOARD_PORT:-7780}`.
+5. `bin/init-ecosystem --all` - the runner scripts (the Run buttons stay
+   **disabled** until they exist) and a launchd/systemd unit so the server
+   survives a reboot.
+6. `bin/install-starters --all` - a routine that keeps producing data, so the
+   Overview, heatmap and health score are not empty.
 
-### The four traps that actually happen
+### Do the work, do not narrate it
 
-- **`frontend/dist/` is gitignored.** It only exists after `npm run build`. No
-  build, no UI - the API answers fine, which makes it look like a frontend bug.
+Running LOCALLY, on the machine that owns the problem, this agent **executes**
+the fix. Handing someone a list of commands you could have run yourself is a
+worse answer, and it hides which step actually failed.
+
+The line is about blast radius, not about typing:
+
+| Action | Stance |
+|--------|--------|
+| Read anything, run `bin/collect-diagnostics`, `bin/sweep`, `curl` the API | just do it |
+| Build, `uv sync`, start the server, `bin/record-run` | do it, say what you did |
+| `bin/init-ecosystem`, `bin/install-starters` (they write into the ecosystem) | say exactly what will be written, then do it - they never overwrite, and `--force` backs up first |
+| Install a service unit, touch anything outside the repo and the ecosystem | ask first |
+| Delete, overwrite, or move someone's file | never - report it and stop |
+
+Over a **chat DM** the calculus inverts: you cannot run anything on their
+machine, so give the ONE command that does it and ask for the output. Never a
+five-step manual sequence when a script exists.
+
+### The traps that actually happen
+
+- **`frontend/dist/` is gitignored on `main`.** It only exists after
+  `npm run build`; the API answers fine meanwhile, which makes it look like a
+  frontend bug. (App Store installs come from the `release` branch, which
+  carries the built bundles - so they never need a build.)
+- **The Run button is disabled, and that is correct.** It delegates to
+  `scripts/run-agent.sh` / `run-scheduled.sh`, which belong to the observed
+  ecosystem. `bin/init-ecosystem --runners` creates them. Do not treat a
+  disabled button as a bug to work around.
+- **kiro-cli resolves `--agent` by the `name` INSIDE the json**, which can
+  differ from the filename the dashboard uses as identity. Launch with the
+  API's `cli_name`, not `name`. (Fixed in 3.0.1 - on an older install the
+  terminal opens on "no agent with name X found" and silently falls back to the
+  default agent.)
+- **An old UI after an update** was a real defect before 3.0.0: `index.html`
+  went out with no `Cache-Control`, so the browser kept pointing at the previous
+  bundle. One hard refresh, then update.
 - **WSL2 kills the distro when the last process exits**, taking the server with
-  it. Keep it in a session you hold open (`tmux`, a window you do not close, or
-  a systemd unit with `systemd=true` in `/etc/wsl.conf`).
+  it. `bin/init-ecosystem --service`, `tmux`, or `systemd=true` in `/etc/wsl.conf`.
 - **`bin/record-run` requires the `sqlite3` CLI** and exits 127 with a message
   when it is absent. The dashboard itself does not need it.
-- **An empty install is the expected outcome.** The dashboard observes
-  artifacts owned by someone else, it does not create the ecosystem. Zero agents
-  and zero runs on a fresh clone is correct; the Overview shows how to record the
-  first run.
+- **An empty install is the expected outcome.** The dashboard observes artifacts
+  owned by someone else. Zero agents and zero runs on a fresh clone is correct -
+  `bin/install-starters --all` is the cure, not a workaround.
+- **Agents from other tools crowding the list** is configuration, not a bug:
+  `DASHBOARD_INCLUDE_AGENTS` (allowlist) or `DASHBOARD_EXCLUDE_AGENTS`.
 
 ### Closing validation - the only thing that counts as success
 
@@ -100,13 +142,20 @@ three, in this order:
 # 1. server answers on the root path (200, and HTML, not just any response)
 curl -fsS -o /dev/null -w '%{http_code} %{content_type}\n' "http://127.0.0.1:${DASHBOARD_PORT:-7780}/"
 
-# 2. a real run lands in the database
+# 2. liveness, and the port the server actually bound (/health is the SPA's page)
+curl -fsS "http://127.0.0.1:${DASHBOARD_PORT:-7780}/healthz"
+
+# 3. a real run lands in the database
 DASHBOARD_DIR="${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}" \
   AGENTS_DIR="$DASHBOARD_DIR" bin/record-run dashboard-support-selftest true
 
-# 3. the API reports that run back
+# 4. the API reports that run back
 curl -fsS "http://127.0.0.1:${DASHBOARD_PORT:-7780}/api/overview" | grep -q dashboard-support-selftest
 ```
+
+For a thorough pass, `bin/sweep` asserts every endpoint, every SPA route and the
+Help assets against the running server - it is how the `/health` collision was
+found, which no unit test could have caught.
 
 If step 1 returns 200 but the body is not HTML, the build is missing - go back
 to the build step instead of declaring success. If step 3 fails while step 2
