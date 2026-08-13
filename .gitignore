@@ -4,9 +4,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 node_modules/
-!ui/dist/
-# frontend/dist IS committed: the KiroCrew App Store install path must work
-# without node/npm on the target machine (the app serves this bundle).
+# build output is NEVER tracked on main - the `release` branch carries the
+# built bundles for App Store installs (see bin/make-release).
+frontend/dist/
+ui/dist/
 .env
 .hypothesis/
 # local-only notes (never published: reference local paths / internal ecosystem)

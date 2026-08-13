@@ -87,6 +87,13 @@ If you use [KiroCrew](https://kiro.dev/docs/crew/), this dashboard is also packa
 
 > **Coming to the App Store registry:** agent-dashboard has been submitted to the official KiroCrew App Registry ([kirodotdev/KiroCrew#3241](https://github.com/kirodotdev/KiroCrew/pull/3241)). Once merged, it installs with one click from the App Store tab.
 
+**Where the built bundles live.** `main` never tracks build output - it is a source branch. The App Store installs from the **`release`** branch, which is `main` plus one generated commit carrying the built `frontend/dist` and `ui/dist`, so an install needs no Node on the target machine (the installer never runs a build). That branch is produced, never hand-edited:
+
+```bash
+bin/make-release            # build both bundles, publish the release branch, verify by blob hash
+bin/make-release --dry-run  # show what would be published
+```
+
 Until then (or for development), install from a local clone:
 
 ```bash

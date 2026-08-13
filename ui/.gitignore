@@ -1,4 +1,3 @@
-# dist/ is intentionally COMMITTED here: the KiroCrew install drops
-# node_modules at any depth and never runs the UI build - the shell loads
-# ui/dist/index.mjs straight from the checkout.
 node_modules/
+# dist is published on the `release` branch by bin/make-release, not tracked here
+dist/

@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""make-release - publish the `release` branch: main plus the built bundles.
+
+Why this exists
+---------------
+Two requirements pull in opposite directions:
+
+  * a source repo must not track build output (it churns on every build, it
+    resists review, and it goes stale silently);
+  * a one-click App Store install must not require Node on the target machine,
+    and the installer never runs a build.
+
+So `main` stays clean (``frontend/dist`` and ``ui/dist`` are gitignored) and the
+built bundles live on a dedicated `release` branch, which is what the app
+registry entry points at - the same shape the `todo-ledger` entry uses. The
+branch is derived, never hand-edited: it is always main's HEAD plus one commit
+carrying the bundles.
+
+Usage
+-----
+    bin/make-release              # build, then publish the release branch
+    bin/make-release --no-build   # publish whatever is already built
+    bin/make-release --dry-run    # show what would be published
+
+Auth: a GitHub token from the environment (GITHUB_TOKEN), or the local
+github-power MCP config when present. The token is never printed.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO_DIR = Path(__file__).resolve().parents[1]
+BUNDLE_DIRS = ("frontend/dist", "ui/dist")
+BRANCH = "release"
+# text extensions are pushed as utf-8 blobs, everything else as base64
+MCP_CONFIG = Path.home() / ".kiro/powers/installed/github-power/mcp.json"
+
+
+def token() -> str:
+    if os.environ.get("GITHUB_TOKEN"):
+        return os.environ["GITHUB_TOKEN"]
+    try:
+        cfg = json.loads(MCP_CONFIG.read_text())
+        return cfg["mcpServers"]["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"]
+    except (OSError, KeyError, json.JSONDecodeError):
+        sys.exit("no GitHub token: set GITHUB_TOKEN")
+
+
+def git(*a: str) -> str:
+    return subprocess.check_output(["git", "-C", str(REPO_DIR), *a], text=True).strip()
+
+
+def origin_slug() -> str:
+    url = git("remote", "get-url", "origin")
+    slug = url.split("github.com")[-1].lstrip(":/").removesuffix(".git")
+    if slug.count("/") != 1:
+        sys.exit(f"cannot derive owner/repo from origin: {url}")
+    return slug
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+
+    if not a.no_build:
+        for sub in ("frontend", "ui"):
+            d = REPO_DIR / sub
+            if not (d / "node_modules").is_dir():
+                print(f"[{sub}] installing deps")
+                subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=d, check=True)
+            print(f"[{sub}] building")
+            subprocess.run(["npm", "run", "build"], cwd=d, check=True)
+
+    files: list[Path] = []
+    for rel in BUNDLE_DIRS:
+        base = REPO_DIR / rel
+        if not base.is_dir():
+            sys.exit(f"missing build output: {rel} (run without --no-build)")
+        files += [p for p in base.rglob("*") if p.is_file() and p.name != ".DS_Store"]
+    if not files:
+        sys.exit("no bundle files found")
+
+    head = git("rev-parse", "HEAD")
+    slug = origin_slug()
+    print(f"repo {slug} | main HEAD {head[:8]} | {len(files)} bundle files")
+    if a.dry_run:
+        for p in sorted(files):
+            print("  would publish", p.relative_to(REPO_DIR))
+        return 0
+
+    hdr = {"Authorization": f"Bearer {token()}",
+           "Accept": "application/vnd.github+json",
+           "User-Agent": "make-release", "Content-Type": "application/json"}
+
+    def api(path: str, method: str = "GET", body: dict | None = None, ok404: bool = False):
+        req = urllib.request.Request(f"https://api.github.com{path}", method=method,
+                                     headers=hdr,
+                                     data=json.dumps(body).encode() if body else None)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 404 and ok404:
+                return None
+            sys.exit(f"HTTP {e.code} on {method} {path}: {e.read().decode()[:300]}")
+
+    remote_head = api(f"/repos/{slug}/git/ref/heads/main")["object"]["sha"]
+    if remote_head != head:
+        print(f"WARNING: local HEAD {head[:8]} != origin/main {remote_head[:8]}; "
+              f"the release will be built on top of origin/main")
+    base_commit = api(f"/repos/{slug}/git/commits/{remote_head}")
+
+    entries = []
+    for p in sorted(files):
+        blob = api(f"/repos/{slug}/git/blobs", "POST",
+                   {"content": base64.b64encode(p.read_bytes()).decode(),
+                    "encoding": "base64"})
+        entries.append({"path": str(p.relative_to(REPO_DIR)), "mode": "100644",
+                        "type": "blob", "sha": blob["sha"]})
+    tree = api(f"/repos/{slug}/git/trees", "POST",
+               {"base_tree": base_commit["tree"]["sha"], "tree": entries})
+    version = json.loads((REPO_DIR / "app.json").read_text()).get("version", "?")
+    commit = api(f"/repos/{slug}/git/commits", "POST", {
+        "message": f"release {version}: built bundles on top of {remote_head[:8]}\n\n"
+                   f"Generated by bin/make-release - do not hand-edit this branch. "
+                   f"main stays free of build output; the app registry entry points here.",
+        "tree": tree["sha"], "parents": [remote_head]})
+
+    ref = f"/repos/{slug}/git/refs/heads/{BRANCH}"
+    if api(ref, ok404=True):
+        api(ref, "PATCH", {"sha": commit["sha"], "force": True})
+    else:
+        api(f"/repos/{slug}/git/refs", "POST",
+            {"ref": f"refs/heads/{BRANCH}", "sha": commit["sha"]})
+    print(f"published {BRANCH} at {commit['sha'][:8]}")
+
+    # verify: every bundle file must be readable on the branch with our bytes
+    c = api(f"/repos/{slug}/git/commits/{commit['sha']}")
+    t = api(f"/repos/{slug}/git/trees/{c['tree']['sha']}?recursive=1")
+    if t.get("truncated"):
+        print("WARNING: remote tree truncated - verification incomplete")
+    remote = {e["path"]: e["sha"] for e in t["tree"] if e["type"] == "blob"}
+    bad = [e["path"] for e in entries if remote.get(e["path"]) != e["sha"]]
+    print("verification:", "ALL MATCH" if not bad else f"MISMATCH: {bad}")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

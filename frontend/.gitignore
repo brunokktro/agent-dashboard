@@ -8,7 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-# dist IS committed (one-click App Store install - no npm on target needed)
+dist
 dist-ssr
 *.local
 
