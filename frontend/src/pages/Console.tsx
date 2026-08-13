@@ -34,6 +34,10 @@ export default function ConsolePage() {
 
   // only agents with a kiro-cli JSON config can be chatted with
   const agents = (data?.agents ?? []).filter((a) => a.has_config).map((a) => a.name).sort()
+  // kiro-cli resolves --agent by the config's internal name, which can differ
+  // from the dashboard name (the filename stem)
+  const cliName = Object.fromEntries(
+    (data?.agents ?? []).map((a) => [a.name, a.cli_name || a.name]))
 
   // ?demo=N opens N plain shells (used for docs screenshots)
   useEffect(() => {
@@ -135,7 +139,7 @@ export default function ConsolePage() {
                   fill
                   broadcastChannel
                   sessionId={s.id}
-                  initialCommand={s.agent ? `kiro-cli chat --agent ${s.agent} --trust-all-tools` : undefined}
+                  initialCommand={s.agent ? `kiro-cli chat --agent ${cliName[s.agent] ?? s.agent} --trust-all-tools` : undefined}
                 />
               </div>
             </div>

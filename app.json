@@ -1,6 +1,6 @@
 {
   "name": "agent-dashboard",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "displayName": "Agent Dashboard",
   "description": "Local-first observability for your AI agent fleet: run history and health scores, day-by-hour heatmaps, P50/P95/P99 durations, failure diagnosis with probable-cause hints, work queue, scheduler view, live logs and real terminals. Observes the ecosystem it is pointed at (runs.db, queue/, schedule.json) and never fabricates it.",
   "author": "brunokktro",

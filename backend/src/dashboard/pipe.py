@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from .config import Settings, get_settings
+from .datastore import Datastore
 
 router = APIRouter()
 
@@ -82,7 +83,7 @@ async def _run_chain(settings: Settings, job_id: str) -> None:
             master, slave = _pty.openpty()
             _set_pty_size(slave)  # 0x0 would wrap the output one word per line
             proc = await asyncio.create_subprocess_exec(
-                "kiro-cli", "chat", "--agent", step["agent"],
+                "kiro-cli", "chat", "--agent", step.get("cli_name") or step["agent"],
                 "--no-interactive", "--trust-all-tools",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=slave, stderr=slave,
@@ -156,11 +157,17 @@ async def _run_chain(settings: Settings, job_id: str) -> None:
 
 @router.post("/api/pipe/start")
 async def pipe_start(body: PipeRequest, settings: Annotated[Settings, Depends(get_settings)]):
+    # kiro-cli resolves --agent by the name INSIDE the json config, which can
+    # differ from the dashboard's name (the filename stem). Resolve here so
+    # the chain runs; the step keeps the dashboard name for display.
+    agents = Datastore(settings).load_agents()
     job_id = uuid.uuid4().hex[:12]
     _jobs[job_id] = {
         "status": "running",
         "prompt": body.prompt,
-        "steps": [{"agent": a, "status": "pending", "output": ""} for a in body.agents],
+        "steps": [{"agent": a, "status": "pending", "output": "",
+                   "cli_name": agents.get(a, {}).get("cli_name", a)}
+                  for a in body.agents],
     }
     _persist(settings, job_id)
     asyncio.get_event_loop().create_task(_run_chain(settings, job_id))

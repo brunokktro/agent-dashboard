@@ -21,8 +21,23 @@ def test_agent_detail(client):
     assert r.status_code == 200
     body = r.json()
     assert body["info"]["name"] == "alpha-agent"
+    assert body["info"]["cli_name"] == "alpha-agent"
     assert body["stats"]["total"] == 2
     assert body["job"]["id"] == "alpha-agent-morning"
+
+
+def test_api_exposes_cli_name_when_config_name_differs(client, ecosystem):
+    """Regression (field report): the terminal button composes
+    ``kiro-cli chat --agent <name>``; with a .json config whose internal
+    ``name`` differs from the filename, kiro-cli fails with "no agent with
+    name X found" unless the API hands the frontend the resolvable name."""
+    (ecosystem.agents_dir / "alpha-agent.json").write_text(json.dumps({
+        "name": "alpha-cli-name", "description": "cfg", "tools": []}))
+    detail = client.get("/api/agent/alpha-agent").json()
+    assert detail["info"]["cli_name"] == "alpha-cli-name"
+    overview = client.get("/api/overview").json()
+    alpha = next(a for a in overview["agents"] if a["name"] == "alpha-agent")
+    assert alpha["cli_name"] == "alpha-cli-name"
 
 
 def test_agent_404(client):
@@ -131,6 +146,40 @@ def test_trigger_without_runner_script_is_a_clear_error(client, ecosystem):
     r = client.post("/api/trigger/alpha-agent-morning")
     assert r.status_code == 503
     assert "run-scheduled.sh" in r.json()["detail"]
+
+
+def test_trigger_hands_runner_the_cli_name_via_env(client, ecosystem):
+    """Regression (field report, same family as the terminal-button bug):
+    the Run button passes the FILENAME stem to run-agent.sh - that is the
+    dashboard identity and must stay, because record-run keys the run by it.
+    But kiro-cli resolves ``--agent`` by the config's internal ``name``, so
+    the runner also needs the resolvable name: it travels as the
+    AGENT_CLI_NAME env var, and the scaffolded runner uses
+    ``${AGENT_CLI_NAME:-$AGENT}`` for the chat command."""
+    import stat
+    import time
+
+    (ecosystem.agents_dir / "alpha-agent.json").write_text(json.dumps({
+        "name": "alpha-cli-name", "description": "cfg", "tools": []}))
+
+    capture = ecosystem.agents_dir / "trigger-capture.txt"
+    runner = ecosystem.agents_dir / "scripts" / "run-agent.sh"
+    runner.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "arg1=$1 cli=${{AGENT_CLI_NAME:-}}" > "{capture}"\n')
+    runner.chmod(runner.stat().st_mode | stat.S_IEXEC)
+
+    r = client.post("/api/trigger-agent/alpha-agent")
+    assert r.status_code == 200
+
+    deadline = time.time() + 5
+    while not capture.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    assert capture.exists(), "runner script was never invoked"
+    content = capture.read_text().strip()
+    # identity arg stays the filename stem; resolvable name rides the env var
+    assert content == "arg1=alpha-agent cli=alpha-cli-name", content
+    capture.unlink()
 
 
 def test_diagnose_uses_configured_extra_hints(ecosystem):

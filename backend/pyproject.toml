@@ -1,6 +1,6 @@
 [project]
 name = "agent-dashboard"
-version = "3.0.0"
+version = "3.0.1"
 description = "Local-first observability dashboard for AI agent ecosystems (runs, queue, schedule, health)"
 requires-python = ">=3.12"
 license = { text = "MIT" }

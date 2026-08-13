@@ -159,6 +159,16 @@ def main() -> int:
             {"ref": f"refs/tags/{tag}", "sha": remote_head})
         print(f"tagged {tag} at {remote_head[:8]}")
 
+    # Also tag LOCALLY, at the local HEAD. The local clone and the remote can be
+    # parallel histories with identical trees (the remote is written through the
+    # Git Data API), so a remote-only tag leaves `bin/release-notes` blind - it
+    # reads local tags. An existing local tag is left alone, same as the remote.
+    if subprocess.run(["git", "-C", str(REPO_DIR), "rev-parse", "-q", "--verify",
+                       f"refs/tags/{tag}"], capture_output=True).returncode != 0:
+        subprocess.run(["git", "-C", str(REPO_DIR), "tag", "-a", tag,
+                        "-m", f"release {version}"], check=False)
+        print(f"tagged {tag} locally at {head[:8]}")
+
     # verify: every bundle file must be readable on the branch with our bytes
     c = api(f"/repos/{slug}/git/commits/{commit['sha']}")
     t = api(f"/repos/{slug}/git/trees/{c['tree']['sha']}?recursive=1")

@@ -87,8 +87,11 @@ AGENTS_DIR="${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}"
 DASHBOARD_DIR="${DASHBOARD_DIR:-$HOME/agent-dashboard}"
 
 # Recording the run is what makes it show up in the dashboard.
+# AGENT is the dashboard identity (filename stem, keys the run in runs.db);
+# kiro-cli resolves --agent by the config's INTERNAL name, which the
+# dashboard hands over as AGENT_CLI_NAME when the two differ.
 RECORDER="$DASHBOARD_DIR/bin/record-run"
-RUN=(kiro-cli chat --agent "$AGENT" --no-interactive "$@")
+RUN=(kiro-cli chat --agent "${AGENT_CLI_NAME:-$AGENT}" --no-interactive "$@")
 
 if [ -x "$RECORDER" ]; then
   AGENTS_DIR="$AGENTS_DIR" exec "$RECORDER" "$AGENT" "${RUN[@]}"

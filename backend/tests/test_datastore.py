@@ -142,6 +142,28 @@ def test_json_only_agent_is_discovered(store, ecosystem):
     assert agents["gamma-agent"]["has_config"] is True
 
 
+def test_cli_name_follows_json_config_not_filename(store, ecosystem):
+    """Regression (field report): kiro-cli resolves --agent by the ``name``
+    field INSIDE the .json config, not by the filename. When they differ,
+    a terminal opened with the filename fails with "no agent with name X
+    found". The dashboard keeps the stem as its identity (runs, logs and
+    queue are keyed by it) but must expose the config's name as ``cli_name``
+    so every composed ``kiro-cli chat --agent`` uses the resolvable one."""
+    import json as _json
+
+    # json-only agent whose internal name differs from the file stem
+    (ecosystem.agents_dir / "file-stem.json").write_text(_json.dumps({
+        "name": "real-internal-name", "description": "mismatched", "tools": []}))
+    # md+json pair with the same mismatch
+    (ecosystem.agents_dir / "alpha-agent.json").write_text(_json.dumps({
+        "name": "alpha-cli-name", "description": "config description", "tools": []}))
+    agents = store.load_agents()
+    assert agents["file-stem"]["cli_name"] == "real-internal-name"
+    assert agents["alpha-agent"]["cli_name"] == "alpha-cli-name"
+    # no config, or config without a usable name -> fall back to the stem
+    assert agents["beta-agent"]["cli_name"] == "beta-agent"
+
+
 def test_non_agent_json_is_ignored(store, ecosystem):
     """Random .json files in the agents dir (policies, state) are not agents."""
     import json as _json

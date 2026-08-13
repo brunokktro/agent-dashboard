@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import subprocess
 import time
 from datetime import datetime
@@ -194,6 +195,7 @@ def api_overview(store: Store, settings: Annotated[Settings, Depends(get_setting
             agents_data.append({
                 "name": name, "description": info["description"], "stats": stats,
                 "has_config": info["has_config"],
+                "cli_name": info["cli_name"],
                 "is_running": is_running(name),
                 "job": {"id": job["id"], "cron": job["cron"]} if job else None,
             })
@@ -245,6 +247,7 @@ def api_agent(name: str, store: Store, settings: Annotated[Settings, Depends(get
     return {
         "info": {
             "name": name,
+            "cli_name": info["cli_name"],
             "description": info["description"],
             "md_lines": md_lines,
             "has_json": info["has_config"],
@@ -355,7 +358,8 @@ def trigger_job(job_id: str, store: Store, settings: Annotated[Settings, Depends
 
 @router.post("/api/trigger-agent/{name}")
 def trigger_agent(name: str, store: Store, settings: Annotated[Settings, Depends(get_settings)]):
-    if name not in store.load_agents():
+    agents = store.load_agents()
+    if name not in agents:
         raise HTTPException(404, "agent not found")
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     log_path = settings.log_dir / f"adhoc-{name}-{stamp}.log"
@@ -366,9 +370,15 @@ def trigger_agent(name: str, store: Store, settings: Annotated[Settings, Depends
             f"runner script not found: {runner}. Ad-hoc runs are executed by "
             "your ecosystem's run-agent.sh (this dashboard only observes); "
             "see README 'Runner scripts' for the expected contract.")
+    # The positional arg stays the filename stem - it is the dashboard
+    # identity (record-run keys the run by it). kiro-cli resolves --agent by
+    # the config's INTERNAL name, so the resolvable name rides an env var the
+    # scaffolded runner consumes as ${AGENT_CLI_NAME:-$AGENT}. Custom runners
+    # that ignore it keep working unchanged.
+    env = {**os.environ, "AGENT_CLI_NAME": agents[name]["cli_name"]}
     with log_path.open("w") as lf:
         subprocess.Popen([str(runner), name, "run", "--no-interactive"],
-                         start_new_session=True, stdout=lf, stderr=lf)
+                         start_new_session=True, stdout=lf, stderr=lf, env=env)
     return {"ok": True, "log": log_path.name}
 
 

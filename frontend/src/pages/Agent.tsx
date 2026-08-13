@@ -29,7 +29,9 @@ export default function AgentPage() {
 
   if (!data) return null
   const { info, stats, runs, job } = data
-  const cliCommand = `kiro-cli chat --agent ${name} --trust-all-tools`
+  // kiro-cli resolves --agent by the config's internal name, which can differ
+  // from the dashboard name (the filename stem)
+  const cliCommand = `kiro-cli chat --agent ${info.cli_name || name} --trust-all-tools`
 
   return (
     <div className="space-y-6">

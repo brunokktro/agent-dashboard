@@ -39,7 +39,23 @@ class Datastore:
           (kiro-cli's native format - some installs have ONLY these).
 
         An ``.md`` + ``.json`` pair is ONE agent, described by the ``.md``.
+
+        The dashboard's identity is the FILENAME stem (runs, logs and queue
+        are keyed by it), but kiro-cli resolves ``--agent`` by the ``name``
+        field INSIDE the .json config. When they differ, a command composed
+        with the stem fails with "no agent with name X found" - so each
+        agent also carries ``cli_name``: the config's name when present,
+        the stem otherwise.
         """
+
+        def config_name(path: Path) -> str | None:
+            try:
+                data = json.loads(path.read_text(errors="replace"))
+            except (json.JSONDecodeError, OSError):
+                return None
+            name = data.get("name") if isinstance(data, dict) else None
+            return name if isinstance(name, str) and name.strip() else None
+
         agents: dict[str, dict[str, Any]] = {}
         for md in sorted(self.s.agents_dir.glob("*.md")):
             try:
@@ -64,10 +80,12 @@ class Datastore:
                         elif ln.strip():
                             break
                 desc = " ".join(block)
+            cfg_path = self.s.agents_dir / f"{md.stem}.json"
             agents[md.stem] = {
                 "name": md.stem,
                 "description": desc,
-                "has_config": (self.s.agents_dir / f"{md.stem}.json").exists(),
+                "has_config": cfg_path.exists(),
+                "cli_name": config_name(cfg_path) or md.stem,
             }
         # JSON-only agents: a .json is an agent config (not policy/state noise)
         # when it parses AND carries both "name" and "tools" keys.
@@ -80,10 +98,12 @@ class Datastore:
                 continue
             if not isinstance(data, dict) or "name" not in data or "tools" not in data:
                 continue
+            cli = data.get("name")
             agents[cfg.stem] = {
                 "name": cfg.stem,
                 "description": str(data.get("description", "")).strip(),
                 "has_config": True,
+                "cli_name": cli if isinstance(cli, str) and cli.strip() else cfg.stem,
             }
         if self.s.include_agents:
             agents = {n: a for n, a in agents.items()

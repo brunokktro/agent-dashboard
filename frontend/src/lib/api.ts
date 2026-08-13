@@ -24,6 +24,7 @@ export interface AgentStats {
 export interface AgentSummary {
   name: string
   has_config?: boolean
+  cli_name?: string
   description: string
   stats: AgentStats
   is_running: boolean
@@ -74,6 +75,7 @@ export interface Overview {
 export interface AgentDetail {
   info: {
     name: string
+    cli_name?: string
     description: string
     md_lines: number
     has_json: boolean
