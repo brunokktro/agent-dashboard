@@ -55,8 +55,9 @@ export function UpdateCheck({ version }: { version?: string }) {
     ? `${info.error} - click to retry`
     : info?.update_available
       ? `Your version: ${info.current}. Upstream: ${info.latest}. ` +
-        "Update with: git pull && (cd frontend && npm run build) - " +
-        "installed as a KiroCrew app, update it from the App Store instead."
+        "See CHANGELOG.md for what changed. Update with: git pull && " +
+        "(cd frontend && npm run build) - installed as a KiroCrew app, " +
+        "update it from the App Store instead."
       : info
         ? `Checked against ${info.repo}. Click to check again.`
         : "Check the upstream repo for a newer version (no background requests)"

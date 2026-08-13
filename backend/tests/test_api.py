@@ -266,3 +266,22 @@ def test_version_comparison_table():
         assert _newer(latest, current), f"{latest} should be newer than {current}"
     for latest, current in not_newer:
         assert not _newer(latest, current), f"{latest} should NOT be newer than {current}"
+
+
+def test_version_is_consistent_across_the_repo():
+    """The update check compares the upstream app.json against the package's
+    __version__, so the two must never drift - nor pyproject's, which is what a
+    pip/uv install reports. One test beats three places to remember."""
+    import re
+    from pathlib import Path
+
+    import dashboard
+
+    root = Path(dashboard.__file__).resolve().parents[3]
+    app_json = json.loads((root / "app.json").read_text())["version"]
+    pyproject = re.search(r'^version = "([^"]+)"',
+                          (root / "backend/pyproject.toml").read_text(),
+                          re.MULTILINE).group(1)
+    assert dashboard.__version__ == app_json == pyproject, (
+        f"version drift: __init__={dashboard.__version__} "
+        f"app.json={app_json} pyproject={pyproject}")
