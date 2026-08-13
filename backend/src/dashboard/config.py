@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     # agents you do not operate). Env format is JSON: '["vendor-*","kiroom-*"]'.
     exclude_agents: list[str] = []
 
+    # Glob patterns of the ONLY agent names to show. Empty means "show all".
+    # Useful when the agents dir is shared with other tools: an allowlist beats
+    # chasing a growing exclude list. Exclusions still win over inclusions.
+    include_agents: list[str] = []
+
+    # Upstream repo for the on-demand update check ("owner/name"). Set it to
+    # your fork to check against your own releases; empty disables the check.
+    upstream_repo: str = "brunokktro/agent-dashboard"
+
     # Site-specific failure hints for the run diagnosis: [regex, hint] pairs
     # matched against the failing run's log segment. Keeps internal tool names
     # out of the code. Env format: '[["corp-sso","SSO expired - reauth"]]'.
@@ -77,8 +86,9 @@ def get_settings() -> Settings:
 
 # Settings keys an app-host config file may override (user-facing knobs only -
 # paths and service wiring stay env/manifest-owned).
-_HOST_CONFIG_KEYS = ("exclude_agents", "extra_hints", "big_log_mb",
-                     "stuck_after_minutes", "job_agent_overrides", "agent_deps")
+_HOST_CONFIG_KEYS = ("exclude_agents", "include_agents", "extra_hints",
+                     "big_log_mb", "stuck_after_minutes", "job_agent_overrides",
+                     "agent_deps", "upstream_repo")
 
 
 def build_settings() -> Settings:

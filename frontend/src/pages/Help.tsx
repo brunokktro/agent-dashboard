@@ -99,6 +99,15 @@ const SECTIONS: Section[] = [
             observe), <K>DASHBOARD_PORT</K>, <K>DASHBOARD_EXCLUDE_AGENTS</K> (glob patterns to hide
             agents you do not operate), <K>DASHBOARD_EXTRA_HINTS</K> (site-specific failure hints
             for the diagnosis).</>,
+            <><b>Seeing agents that are not yours?</b> A shared agents dir also holds agents
+            installed by other tools. Either point <K>DASHBOARD_AGENTS_DIR</K> at a dedicated
+            directory (full isolation), or filter the shared one with
+            <K>DASHBOARD_INCLUDE_AGENTS</K> (allowlist - usually easier) and
+            <K>DASHBOARD_EXCLUDE_AGENTS</K> (denylist). Exclusions win over inclusions.</>,
+            <>The version button in the header checks the upstream repo for a newer release -
+            only when you click it, so nothing phones home in the background. A failed check
+            reports as failed, never as "up to date". Aim it at your fork with
+            <K>DASHBOARD_UPSTREAM_REPO</K>, or set it empty to turn it off.</>,
             <>Running as a KiroCrew app, use the per-app settings file instead - the host writes
             <K>data/config.json</K> and the same keys (<K>exclude_agents</K>, <K>extra_hints</K>,
             thresholds) override the environment.</>,

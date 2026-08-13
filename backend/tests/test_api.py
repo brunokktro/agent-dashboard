@@ -200,3 +200,69 @@ def test_agent_detail_reports_runner_capabilities(client, ecosystem):
     assert caps["run_agent"] is False
     (ecosystem.agents_dir / "scripts" / "run-agent.sh").write_text("#!/bin/sh\n")
     assert client.get("/api/agent/alpha-agent").json()["capabilities"]["run_agent"] is True
+
+
+def test_include_agents_narrows_to_an_allowlist(ecosystem):
+    """A shared agents dir (e.g. ~/.kiro/agents) also holds agents installed by
+    other tools. An allowlist is the ergonomic inverse of excluding a growing
+    list of vendor prefixes: when set, ONLY matching agents are shown."""
+    import json as _json
+
+    from dashboard.config import Settings
+    from dashboard.datastore import Datastore
+
+    (ecosystem.agents_dir / "VendorPack-thing.json").write_text(_json.dumps({
+        "name": "VendorPack-thing", "description": "installed by another tool", "tools": []}))
+    s = Settings(agents_dir=ecosystem.agents_dir, include_agents=["alpha-*"])
+    agents = Datastore(s).load_agents()
+    assert set(agents) == {"alpha-agent"}
+
+
+def test_exclude_wins_over_include(ecosystem):
+    from dashboard.config import Settings
+    from dashboard.datastore import Datastore
+
+    s = Settings(agents_dir=ecosystem.agents_dir,
+                 include_agents=["*-agent"], exclude_agents=["beta-*"])
+    assert set(Datastore(s).load_agents()) == {"alpha-agent"}
+
+
+def test_version_endpoint_reports_current_without_network(client):
+    """The check is on demand only - a plain GET never calls out, so the
+    dashboard makes no background network requests."""
+    body = client.get("/api/version").json()
+    assert body["current"] == __import__("dashboard").__version__
+    assert body["latest"] is None and body["update_available"] is False
+    assert body["checked"] is False
+
+
+def test_version_endpoint_check_handles_unreachable_upstream(client, monkeypatch):
+    """An upstream that cannot be reached is reported as an error, never as
+    'you are up to date' - a failed check is not a verdict."""
+    import dashboard.api as api_mod
+
+    def boom(_url, timeout=0):
+        raise OSError("no network")
+
+    monkeypatch.setattr(api_mod, "_fetch_upstream_version", boom)
+    body = client.get("/api/version?check=1").json()
+    assert body["checked"] is True
+    assert body["update_available"] is False
+    assert "no network" in body["error"]
+
+
+def test_version_comparison_table():
+    """Includes the case that matters for a project living on -alpha.N: two
+    pre-releases of the same release must still compare."""
+    from dashboard.api import _newer
+
+    newer = [("3.0.0", "3.0.0-alpha.1"), ("3.0.1", "3.0.0"),
+             ("3.0.0-alpha.2", "3.0.0-alpha.1"), ("3.0.0-beta.1", "3.0.0-alpha.9"),
+             ("3.1.0", "3.0.9"), ("4.0.0-alpha.1", "3.9.9")]
+    not_newer = [("3.0.0", "3.0.0"), ("2.9.0", "3.0.0"),
+                 ("3.0.0-alpha.1", "3.0.0"), ("3.0.0-alpha.1", "3.0.0-alpha.2"),
+                 ("3.0.0-alpha.9", "3.0.0-beta.1")]
+    for latest, current in newer:
+        assert _newer(latest, current), f"{latest} should be newer than {current}"
+    for latest, current in not_newer:
+        assert not _newer(latest, current), f"{latest} should NOT be newer than {current}"

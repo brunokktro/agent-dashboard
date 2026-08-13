@@ -10,29 +10,45 @@
 #   bin/init-ecosystem --runners       # write scripts/run-agent.sh + run-scheduled.sh
 #   bin/init-ecosystem --service       # install the launchd (macOS) / systemd unit
 #   bin/init-ecosystem --all           # both
+#   bin/init-ecosystem --runners --force   # refresh the templates, keeping a .bak copy
 #
-# Non-destructive by design: an existing file is NEVER overwritten - it is
-# reported and skipped, so running this twice is safe and running it on a live
-# ecosystem cannot clobber your own runners.
+# Safe to run on an ALREADY INSTALLED dashboard, and safe to run twice: an
+# existing file is NEVER silently overwritten - it is reported and skipped.
+# With --force it is moved aside to <file>.bak-<timestamp> first, so your own
+# edits are always recoverable.
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 AGENTS_DIR="${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}"
 PORT="${DASHBOARD_PORT:-7780}"
-DO_RUNNERS=0; DO_SERVICE=0
+DO_RUNNERS=0; DO_SERVICE=0; FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --runners) DO_RUNNERS=1; shift ;;
     --service) DO_SERVICE=1; shift ;;
     --all)     DO_RUNNERS=1; DO_SERVICE=1; shift ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --force)   FORCE=1; shift ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 say()  { printf '%s\n' "$*"; }
-kept() { say "  KEPT    $1 (already exists - not touched)"; }
+kept() { say "  KEPT    $1 (already exists - not touched; --force to refresh)"; }
 made() { say "  CREATED $1"; }
+# returns 0 when the caller should write the file
+should_write() {
+  local path="$1" label="$2"
+  if [ ! -f "$path" ]; then return 0; fi
+  if [ "$FORCE" -eq 1 ]; then
+    local bak="$path.bak-$(date +%Y%m%d-%H%M%S)"
+    mv "$path" "$bak"
+    say "  BACKUP  $label -> $(basename "$bak")"
+    return 0
+  fi
+  kept "$label"
+  return 1
+}
 
 say "ecosystem: $AGENTS_DIR"
 say "dashboard: $REPO_DIR (port $PORT)"
@@ -59,7 +75,7 @@ if [ "$DO_RUNNERS" -eq 1 ]; then
   say "Runner scripts:"
   mkdir -p "$AGENTS_DIR/scripts" "$AGENTS_DIR/logs"
   AGENT_RUNNER="$AGENTS_DIR/scripts/run-agent.sh"
-  if [ -f "$AGENT_RUNNER" ]; then kept "scripts/run-agent.sh"; else
+  if should_write "$AGENT_RUNNER" "scripts/run-agent.sh"; then
     cat > "$AGENT_RUNNER" <<'RUNNER'
 #!/usr/bin/env bash
 # run-agent.sh <agent-name> [args...] - one ad-hoc run of an agent.
@@ -84,7 +100,7 @@ RUNNER
   fi
 
   JOB_RUNNER="$AGENTS_DIR/scripts/run-scheduled.sh"
-  if [ -f "$JOB_RUNNER" ]; then kept "scripts/run-scheduled.sh"; else
+  if should_write "$JOB_RUNNER" "scripts/run-scheduled.sh"; then
     cat > "$JOB_RUNNER" <<'RUNNER'
 #!/usr/bin/env bash
 # run-scheduled.sh <job-id> <script> <timeout-sec> - run a scheduled job the
@@ -110,7 +126,7 @@ RUNNER
   fi
 
   SCHEDULE="$AGENTS_DIR/scripts/schedule.json"
-  if [ -f "$SCHEDULE" ]; then kept "scripts/schedule.json"; else
+  if should_write "$SCHEDULE" "scripts/schedule.json"; then
     printf '{\n  "version": 1,\n  "jobs": []\n}\n' > "$SCHEDULE"; made "scripts/schedule.json"
   fi
   say ""
@@ -127,7 +143,7 @@ if [ "$DO_SERVICE" -eq 1 ]; then
     Darwin)
       LABEL="com.agent-dashboard.server"
       PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-      if [ -f "$PLIST" ]; then kept "$PLIST"; else
+      if should_write "$PLIST" "$(basename "$PLIST")"; then
         cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -170,7 +186,7 @@ PLISTEOF
     Linux)
       UNIT_DIR="$HOME/.config/systemd/user"; UNIT="$UNIT_DIR/agent-dashboard.service"
       mkdir -p "$UNIT_DIR"
-      if [ -f "$UNIT" ]; then kept "$UNIT"; else
+      if should_write "$UNIT" "$(basename "$UNIT")"; then
         cat > "$UNIT" <<UNITEOF
 [Unit]
 Description=Agent Dashboard
@@ -195,4 +211,4 @@ UNITEOF
   esac
 fi
 
-say "Done. Nothing existing was overwritten."
+say "Done. Existing files were kept or backed up - nothing was lost."

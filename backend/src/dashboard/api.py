@@ -56,6 +56,82 @@ def api_apphost(settings: Annotated[Settings, Depends(get_settings)]):
     return api_health_liveness(settings)
 
 
+def _fetch_upstream_version(url: str, timeout: int = 8) -> str:
+    """Read the upstream app.json and return its version. Network only."""
+    import json as _json
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "agent-dashboard"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - fixed https host
+        return str(_json.loads(r.read()).get("version", "")).strip()
+
+
+def _newer(latest: str, current: str) -> bool:
+    """Is `latest` a newer version than `current`?
+
+    Dependency-free comparison of semver/PEP440-ish strings:
+      * numeric release parts first (3.0.1 > 3.0.0);
+      * same release, one has no pre-release suffix -> that one wins
+        (3.0.0 > 3.0.0-alpha.1);
+      * both pre-release -> compare the suffix as (label, numbers), so
+        alpha.2 > alpha.1 and beta > alpha. This case matters: a project
+        living on -alpha.N would otherwise never see an update.
+    """
+    import re as _re
+
+    def split(v: str) -> tuple[list[int], str, list[int]]:
+        head, _, tail = v.strip().partition("-")
+        nums = [int(x) for x in _re.findall(r"\d+", head)] or [0]
+        label = "".join(_re.findall(r"[A-Za-z]+", tail))
+        tnums = [int(x) for x in _re.findall(r"\d+", tail)]
+        return nums, label, tnums
+
+    lnum, llabel, ltnums = split(latest)
+    cnum, clabel, ctnums = split(current)
+    if lnum != cnum:
+        return lnum > cnum
+    if not llabel and clabel:      # released beats pre-release
+        return True
+    if llabel and not clabel:      # pre-release never beats released
+        return False
+    if llabel != clabel:           # beta > alpha, rc > beta
+        return llabel > clabel
+    return ltnums > ctnums         # alpha.2 > alpha.1
+
+
+@router.get("/api/version")
+def api_version(settings: Annotated[Settings, Depends(get_settings)], check: int = 0):
+    """Version, and (only when ``check=1``) whether the upstream has a newer one.
+
+    The call to GitHub happens ONLY on an explicit check, so the dashboard makes
+    no background network requests. A check that fails is reported as an error -
+    never as "up to date", which would be a silent false negative.
+    """
+    from . import __version__
+    out: dict[str, object] = {"current": __version__, "latest": None,
+                              "update_available": False, "checked": False,
+                              "error": None, "repo": settings.upstream_repo,
+                              "url": (f"https://github.com/{settings.upstream_repo}"
+                                      if settings.upstream_repo else None)}
+    if not check:
+        return out
+    out["checked"] = True
+    if not settings.upstream_repo:
+        out["error"] = "update check disabled (DASHBOARD_UPSTREAM_REPO is empty)"
+        return out
+    url = f"https://raw.githubusercontent.com/{settings.upstream_repo}/main/app.json"
+    try:
+        latest = _fetch_upstream_version(url)
+    except Exception as exc:  # noqa: BLE001 - any failure is a failed check, not a verdict
+        out["error"] = f"could not reach the upstream repo: {exc}"
+        return out
+    if not latest:
+        out["error"] = "upstream app.json has no version field"
+        return out
+    out["latest"] = latest
+    out["update_available"] = _newer(latest, __version__)
+    return out
+
+
 @router.get("/api/overview")
 def api_overview(store: Store, settings: Annotated[Settings, Depends(get_settings)]):
     agents = store.load_agents()

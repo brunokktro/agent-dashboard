@@ -17,6 +17,7 @@ import SupervisorPage from "@/pages/Supervisor"
 import LogsPage from "@/pages/Logs"
 import ConsolePage from "@/pages/Console"
 import HelpPage from "@/pages/Help"
+import { UpdateCheck } from "@/components/UpdateCheck"
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -146,6 +147,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-1">
+            <UpdateCheck />
             <kbd className="hidden rounded border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground md:inline">⌘K</kbd>
             <DarkToggle />
           </div>

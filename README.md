@@ -165,6 +165,8 @@ Everything is environment-driven - no hardcoded paths.
 | `DASHBOARD_BIG_LOG_MB` | `50` | Large-log alert threshold |
 | `DASHBOARD_STUCK_AFTER_MINUTES` | `30` | Stuck queue item threshold |
 | `DASHBOARD_EXCLUDE_AGENTS` | `[]` | Glob patterns of agent names to hide from every view, JSON list (e.g. `'["vendor-*","*-heartbeat"]'`) - useful for vendor-installed agents you do not operate |
+| `DASHBOARD_INCLUDE_AGENTS` | `[]` | Allowlist: when set, ONLY agents matching these globs are shown. Exclusions still win |
+| `DASHBOARD_UPSTREAM_REPO` | `brunokktro/agent-dashboard` | `owner/name` checked by the header's update button; empty disables the check |
 | `DASHBOARD_EXTRA_HINTS` | `[]` | Site-specific failure hints for the run diagnosis, JSON list of `[regex, hint]` pairs matched against the failing run's log (e.g. `'[["corp-sso","SSO expired - re-authenticate"]]'`) - keeps internal tool names out of the code |
 
 Running under an app host (e.g. as a KiroCrew app) the backend gets a minimal environment, so `DASHBOARD_*` vars cannot reach it. There, the host's per-app settings file is the configuration channel: `$KIROCREW_HOME/apps/agent-dashboard/data/config.json` (editable via the host's `PUT /api/apps/agent-dashboard/config`), accepting `exclude_agents`, `extra_hints`, `big_log_mb`, `stuck_after_minutes`, `job_agent_overrides` and `agent_deps` with the same shapes as the env vars. Recognized keys override the environment; the file is optional.
@@ -178,9 +180,27 @@ bin/init-ecosystem             # report what is missing; writes nothing
 bin/init-ecosystem --runners   # scaffold run-agent.sh + run-scheduled.sh (+ empty schedule.json)
 bin/init-ecosystem --service   # launchd (macOS) or systemd --user (Linux) unit, so it survives a reboot
 bin/init-ecosystem --all       # both
+bin/init-ecosystem --runners --force   # refresh the templates, moving yours to <file>.bak-<timestamp>
 ```
 
+Works the same on a **fresh clone and on an install you already have running** - if you cloned before this script existed, `git pull` and run it. Re-running is safe: existing files are reported as `KEPT` and never silently overwritten; `--force` backs yours up first, so nothing is ever lost.
+
 The scaffolded runners assume kiro-cli and wrap each run with `bin/record-run`, which is what makes it appear in the dashboard - edit the one `RUN=` line for your own setup.
+
+### Scoping which agents you see
+
+A shared agents directory (`~/.kiro/agents` is the default) usually holds agents installed by other tools too. Two ways to narrow it, and they compose:
+
+| Approach | How | When |
+|----------|-----|------|
+| Separate ecosystem | `DASHBOARD_AGENTS_DIR=~/my-agents` | full isolation - its own `runs.db`, queue and schedule |
+| Filter a shared dir | `DASHBOARD_INCLUDE_AGENTS='["my-*","ops-*"]'` (allowlist) and/or `DASHBOARD_EXCLUDE_AGENTS='["Vendor*"]'` (denylist) | keep one ecosystem, hide what you do not operate |
+
+An allowlist usually beats chasing a growing denylist. Exclusions win over inclusions, so you can allow a broad pattern and still carve out exceptions.
+
+### Update check
+
+The header has a **version button**: click it and the dashboard compares your version against the upstream repo's `app.json`. It only calls out when you click - there are no background network requests - and a check that fails says so instead of claiming you are up to date. Point it at your own fork with `DASHBOARD_UPSTREAM_REPO=owner/name`, or set it empty to disable the check entirely.
 
 The rest of this section is the contract, if you would rather write them yourself.
 
