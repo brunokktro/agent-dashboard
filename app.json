@@ -36,6 +36,23 @@
   },
   "setup": {
     "onEnable": "cd frontend && [ -f dist/index.html ] || (npm ci --no-audit --no-fund && npm run build)",
-    "onEnableTimeout": 300
+    "onEnableTimeout": 300,
+    "configSchema": {
+      "type": "object",
+      "properties": {
+        "exclude_agents": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Glob patterns of agent names to hide from every view (e.g. vendor-installed agents you do not operate)"
+        },
+        "extra_hints": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "string" } },
+          "description": "Site-specific failure hints for the run diagnosis: [regex, hint] pairs matched against a failing run's log"
+        },
+        "big_log_mb": { "type": "integer", "description": "Large-log alert threshold (MB)" },
+        "stuck_after_minutes": { "type": "integer", "description": "Stuck queue item threshold (minutes)" }
+      }
+    }
   }
 }

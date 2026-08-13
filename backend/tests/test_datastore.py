@@ -181,3 +181,39 @@ def test_exclude_agents_filters_by_glob(ecosystem):
     assert "vendor-tool-x" not in agents
     assert "beta-agent" not in agents
     assert "alpha-agent" in agents
+
+
+def test_runtime_config_file_overrides_settings(tmp_path, monkeypatch):
+    """Under an app host (KiroCrew) the backend gets a minimal env - no
+    DASHBOARD_* vars can reach it. The host's per-app config.json
+    ($KIROCREW_HOME/apps/$KIROCREW_APP_NAME/data/config.json) is the only
+    settings channel, so Settings must honor it."""
+    import json as _json
+
+    from dashboard.config import build_settings
+
+    cfg_dir = tmp_path / "apps" / "agent-dashboard" / "data"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.json").write_text(_json.dumps({
+        "exclude_agents": ["vendor-*"],
+        "extra_hints": [["corp-sso", "SSO expired"]],
+        "ignored_unknown_key": True,
+    }))
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setenv("KIROCREW_APP_NAME", "agent-dashboard")
+    s = build_settings()
+    assert s.exclude_agents == ["vendor-*"]
+    assert s.extra_hints == [["corp-sso", "SSO expired"]]
+
+
+def test_runtime_config_absent_or_malformed_is_ignored(tmp_path, monkeypatch):
+    from dashboard.config import build_settings
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setenv("KIROCREW_APP_NAME", "agent-dashboard")
+    assert build_settings().exclude_agents == []  # no file -> defaults
+
+    cfg_dir = tmp_path / "apps" / "agent-dashboard" / "data"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.json").write_text("{not json")
+    assert build_settings().exclude_agents == []  # malformed -> defaults

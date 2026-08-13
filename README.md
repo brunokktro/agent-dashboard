@@ -142,6 +142,8 @@ Everything is environment-driven - no hardcoded paths.
 | `DASHBOARD_EXCLUDE_AGENTS` | `[]` | Glob patterns of agent names to hide from every view, JSON list (e.g. `'["vendor-*","*-heartbeat"]'`) - useful for vendor-installed agents you do not operate |
 | `DASHBOARD_EXTRA_HINTS` | `[]` | Site-specific failure hints for the run diagnosis, JSON list of `[regex, hint]` pairs matched against the failing run's log (e.g. `'[["corp-sso","SSO expired - re-authenticate"]]'`) - keeps internal tool names out of the code |
 
+Running under an app host (e.g. as a KiroCrew app) the backend gets a minimal environment, so `DASHBOARD_*` vars cannot reach it. There, the host's per-app settings file is the configuration channel: `$KIROCREW_HOME/apps/agent-dashboard/data/config.json` (editable via the host's `PUT /api/apps/agent-dashboard/config`), accepting `exclude_agents`, `extra_hints`, `big_log_mb`, `stuck_after_minutes`, `job_agent_overrides` and `agent_deps` with the same shapes as the env vars. Recognized keys override the environment; the file is optional.
+
 ## Runner scripts - the two optional execution hooks
 
 The dashboard **observes** your ecosystem; it does not ship an agent runtime. The two "run" buttons delegate to scripts that live in YOUR ecosystem, at `$DASHBOARD_AGENTS_DIR/scripts/`:

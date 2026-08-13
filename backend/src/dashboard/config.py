@@ -72,4 +72,37 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return build_settings()
+
+
+# Settings keys an app-host config file may override (user-facing knobs only -
+# paths and service wiring stay env/manifest-owned).
+_HOST_CONFIG_KEYS = ("exclude_agents", "extra_hints", "big_log_mb",
+                     "stuck_after_minutes", "job_agent_overrides", "agent_deps")
+
+
+def build_settings() -> Settings:
+    """Env-driven Settings, optionally overridden by an app-host config file.
+
+    Under an app host like KiroCrew the backend is spawned with a minimal
+    environment - DASHBOARD_* vars cannot reach it. The host persists per-app
+    settings at ``$KIROCREW_HOME/apps/$KIROCREW_APP_NAME/data/config.json``
+    (editable via its ``PUT /api/apps/{name}/config``), so recognized keys
+    from that file win over the (empty) env. Absent or malformed files fall
+    back to plain env behavior; unknown keys are ignored.
+    """
+    import json
+    import os
+
+    settings = Settings()
+    home, app = os.environ.get("KIROCREW_HOME"), os.environ.get("KIROCREW_APP_NAME")
+    if home and app:
+        cfg = Path(home) / "apps" / app / "data" / "config.json"
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        overrides = {k: v for k, v in data.items() if k in _HOST_CONFIG_KEYS}
+        if overrides:
+            settings = Settings(**{**settings.model_dump(), **overrides})
+    return settings
