@@ -351,11 +351,11 @@ def diagnose_run(run_id: int, store: Store, settings: Annotated[Settings, Depend
             if not segment:
                 segment = lines[-60:]
 
-    # known failure patterns -> targeted hints
+    # known failure patterns -> targeted hints (generic; site-specific ones
+    # come from settings.extra_hints so internal tool names stay out of code)
     text = "\n".join(segment)
     hints: list[str] = []
     for pat, hint in [
-        (r"mwinit|midway", "Midway/auth expired - run `mwinit -f` and retry"),
         (r"ExpiredToken|AccessDenied|InvalidClientTokenId|credentials",
          "AWS credentials issue - refresh the profile used by this job"),
         (r"ModuleNotFoundError|ImportError", "Python dependency missing in the job's environment"),
@@ -366,6 +366,7 @@ def diagnose_run(run_id: int, store: Store, settings: Annotated[Settings, Depend
          "An MCP server failed to start or dropped - check its auth/registry"),
         (r"timed out|TimeoutExpired", "A step inside the run timed out"),
         (r"Traceback", "Python exception - the traceback below has the root cause"),
+        *[(p, h) for p, h in settings.extra_hints],
     ]:
         if _re.search(pat, text, _re.IGNORECASE):
             hints.append(hint)

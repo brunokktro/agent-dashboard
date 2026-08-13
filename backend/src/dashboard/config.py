@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # agents you do not operate). Env format is JSON: '["vendor-*","kiroom-*"]'.
     exclude_agents: list[str] = []
 
+    # Site-specific failure hints for the run diagnosis: [regex, hint] pairs
+    # matched against the failing run's log segment. Keeps internal tool names
+    # out of the code. Env format: '[["corp-sso","SSO expired - reauth"]]'.
+    extra_hints: list[list[str]] = []
+
     # Alert thresholds
     big_log_mb: int = 50
     stuck_after_minutes: int = 30

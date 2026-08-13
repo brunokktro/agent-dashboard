@@ -130,3 +130,34 @@ def test_trigger_without_runner_script_is_a_clear_error(client, ecosystem):
     r = client.post("/api/trigger/alpha-agent-morning")
     assert r.status_code == 503
     assert "run-scheduled.sh" in r.json()["detail"]
+
+
+def test_diagnose_uses_configured_extra_hints(ecosystem):
+    """Site-specific failure patterns (internal auth tools etc.) come from
+    DASHBOARD_EXTRA_HINTS config - the public code stays generic."""
+    import sqlite3
+
+    from fastapi.testclient import TestClient
+
+    from dashboard.config import Settings, get_settings
+    from dashboard.main import create_app
+
+    log = ecosystem.agents_dir / "logs" / "alpha-agent-morning.log"
+    log.write_text("[2026-08-06 10:00:00] ERROR: corp-sso session expired\n")
+    conn = sqlite3.connect(ecosystem.agents_dir / "runs.db")
+    conn.execute(
+        "INSERT INTO runs (job_id, started_at, duration_sec, status, exit_code, log_path) "
+        "VALUES (?,?,?,?,?,?)",
+        ("alpha-agent-morning", "2026-08-06 10:00:00", 5, "failed", 1,
+         "logs/alpha-agent-morning.log"))
+    run_id = conn.execute("SELECT MAX(id) FROM runs").fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    s = Settings(agents_dir=ecosystem.agents_dir, supervisor_service="",
+                 extra_hints=[["corp-sso", "Corporate SSO expired - re-authenticate"]])
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: s
+    r = TestClient(app).get(f"/api/runs/{run_id}/diagnose")
+    assert r.status_code == 200
+    assert "Corporate SSO expired - re-authenticate" in r.json()["hints"]
