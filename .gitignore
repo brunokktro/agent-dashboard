@@ -4,8 +4,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 node_modules/
-frontend/dist/
 !ui/dist/
+# frontend/dist IS committed: the KiroCrew App Store install path must work
+# without node/npm on the target machine (the app serves this bundle).
 .env
 .hypothesis/
 # local-only notes (never published: reference local paths / internal ecosystem)
