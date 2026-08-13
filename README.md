@@ -171,6 +171,19 @@ Running under an app host (e.g. as a KiroCrew app) the backend gets a minimal en
 
 ## Runner scripts - the two optional execution hooks
 
+Fastest path: `bin/init-ecosystem` scaffolds them for you (and can install the service unit). It is non-destructive - an existing file is reported and skipped, never overwritten:
+
+```bash
+bin/init-ecosystem             # report what is missing; writes nothing
+bin/init-ecosystem --runners   # scaffold run-agent.sh + run-scheduled.sh (+ empty schedule.json)
+bin/init-ecosystem --service   # launchd (macOS) or systemd --user (Linux) unit, so it survives a reboot
+bin/init-ecosystem --all       # both
+```
+
+The scaffolded runners assume kiro-cli and wrap each run with `bin/record-run`, which is what makes it appear in the dashboard - edit the one `RUN=` line for your own setup.
+
+The rest of this section is the contract, if you would rather write them yourself.
+
 The dashboard **observes** your ecosystem; it does not ship an agent runtime. The two "run" buttons delegate to scripts that live in YOUR ecosystem, at `$DASHBOARD_AGENTS_DIR/scripts/`:
 
 | Script | Called by | Contract |

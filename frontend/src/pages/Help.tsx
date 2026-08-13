@@ -76,6 +76,22 @@ const SECTIONS: Section[] = [
         ),
       },
       {
+        id: "keep-running", title: "Keep it running (and enable the Run buttons)",
+        body: (
+          <UL items={[
+            <>One command sets up both: <K>bin/init-ecosystem --all</K> writes the two runner
+            scripts the Run buttons need and installs a service unit (launchd on macOS,
+            systemd --user on Linux) so the dashboard comes back after a reboot.</>,
+            <>It is non-destructive: an existing file is reported as <K>KEPT</K> and never
+            overwritten, so running it twice is safe. Without arguments it only reports what
+            is missing.</>,
+            "Run buttons stay disabled until the runners exist - the dashboard observes your ecosystem, it does not invent how your agents are executed.",
+            <>WSL2 note: the distro shuts down when its last process exits - keep a session
+            open (<K>tmux</K>) or set <K>systemd=true</K> in <K>/etc/wsl.conf</K>.</>,
+          ]} />
+        ),
+      },
+      {
         id: "settings", title: "Settings",
         body: (
           <UL items={[
@@ -140,7 +156,7 @@ const SECTIONS: Section[] = [
           <UL items={[
             "Searchable grid of every agent, with facet chips: Running, Scheduled (has a cron job), Chat-ready (has a kiro-cli JSON config).",
             "The whole card is clickable - it opens the agent's page. The inner buttons act on the agent without navigating.",
-            "Play button triggers a background run; the card glows blue while running. It renders DISABLED when your ecosystem has no scripts/run-agent.sh - the tooltip names the file, since triggering is the ecosystem's job, not the dashboard's.",
+            "Play button triggers a background run; the card glows blue while running. It renders DISABLED when your ecosystem has no scripts/run-agent.sh - the tooltip names the file, and `bin/init-ecosystem --runners` scaffolds it (non-destructive: it never overwrites an existing file).",
             "Terminal icon (chat-ready agents) jumps straight to that agent's page with the terminal already open.",
           ]} />
         ),

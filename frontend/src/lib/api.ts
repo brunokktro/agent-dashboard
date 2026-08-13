@@ -56,9 +56,10 @@ export interface Capabilities {
 
 /** Why a Run button is disabled - shown as its tooltip. */
 export const RUNNER_HINT =
-  "Disabled: this ecosystem has no runner script. Triggering needs " +
-  "scripts/run-agent.sh (agents) or scripts/run-scheduled.sh (jobs) in your " +
-  "DASHBOARD_AGENTS_DIR - see 'Runner scripts' in the README."
+  "Disabled: this ecosystem has no runner script. Run " +
+  "`bin/init-ecosystem --runners` to scaffold scripts/run-agent.sh and " +
+  "run-scheduled.sh in your DASHBOARD_AGENTS_DIR (it never overwrites an " +
+  "existing file) - see 'Runner scripts' in the README."
 
 export interface Overview {
   agents: AgentSummary[]

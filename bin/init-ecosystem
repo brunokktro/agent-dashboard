@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# init-ecosystem - make the Run buttons work, and keep the dashboard running.
+#
+# The dashboard OBSERVES an ecosystem, it never fabricates one. This script is
+# the explicit, opt-in exception: you ask for it, and it writes the two runner
+# scripts the Run buttons delegate to, plus (optionally) a service unit so the
+# dashboard survives a reboot.
+#
+#   bin/init-ecosystem                 # show what is missing and what it would do
+#   bin/init-ecosystem --runners       # write scripts/run-agent.sh + run-scheduled.sh
+#   bin/init-ecosystem --service       # install the launchd (macOS) / systemd unit
+#   bin/init-ecosystem --all           # both
+#
+# Non-destructive by design: an existing file is NEVER overwritten - it is
+# reported and skipped, so running this twice is safe and running it on a live
+# ecosystem cannot clobber your own runners.
+set -uo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+AGENTS_DIR="${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}"
+PORT="${DASHBOARD_PORT:-7780}"
+DO_RUNNERS=0; DO_SERVICE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --runners) DO_RUNNERS=1; shift ;;
+    --service) DO_SERVICE=1; shift ;;
+    --all)     DO_RUNNERS=1; DO_SERVICE=1; shift ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+say()  { printf '%s\n' "$*"; }
+kept() { say "  KEPT    $1 (already exists - not touched)"; }
+made() { say "  CREATED $1"; }
+
+say "ecosystem: $AGENTS_DIR"
+say "dashboard: $REPO_DIR (port $PORT)"
+say ""
+
+if [ "$DO_RUNNERS" -eq 0 ] && [ "$DO_SERVICE" -eq 0 ]; then
+  say "Current state:"
+  for f in run-agent.sh run-scheduled.sh; do
+    [ -f "$AGENTS_DIR/scripts/$f" ] && say "  present  scripts/$f" || say "  MISSING  scripts/$f  (Run button disabled)"
+  done
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # only looks for the unit THIS script installs - you may well be running
+    # the dashboard under a service of your own, which is none of our business
+    launchctl list "com.agent-dashboard.server" >/dev/null 2>&1 \
+      && say "  present  launchd unit com.agent-dashboard.server" \
+      || say "  MISSING  launchd unit com.agent-dashboard.server (if you run it another way, ignore this)"
+  fi
+  say ""
+  say "Nothing was written. Re-run with --runners, --service or --all."
+  exit 0
+fi
+
+if [ "$DO_RUNNERS" -eq 1 ]; then
+  say "Runner scripts:"
+  mkdir -p "$AGENTS_DIR/scripts" "$AGENTS_DIR/logs"
+  AGENT_RUNNER="$AGENTS_DIR/scripts/run-agent.sh"
+  if [ -f "$AGENT_RUNNER" ]; then kept "scripts/run-agent.sh"; else
+    cat > "$AGENT_RUNNER" <<'RUNNER'
+#!/usr/bin/env bash
+# run-agent.sh <agent-name> [args...] - one ad-hoc run of an agent.
+# Called by the dashboard's Run button. Scaffolded by bin/init-ecosystem:
+# adapt the RUN line to whatever actually runs your agents.
+set -uo pipefail
+AGENT="${1:?usage: run-agent.sh <agent-name> [args...]}"; shift || true
+AGENTS_DIR="${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}"
+DASHBOARD_DIR="${DASHBOARD_DIR:-$HOME/agent-dashboard}"
+
+# Recording the run is what makes it show up in the dashboard.
+RECORDER="$DASHBOARD_DIR/bin/record-run"
+RUN=(kiro-cli chat --agent "$AGENT" --no-interactive "$@")
+
+if [ -x "$RECORDER" ]; then
+  AGENTS_DIR="$AGENTS_DIR" exec "$RECORDER" "$AGENT" "${RUN[@]}"
+fi
+echo "note: $RECORDER not found - running unrecorded (set DASHBOARD_DIR)" >&2
+exec "${RUN[@]}"
+RUNNER
+    chmod +x "$AGENT_RUNNER"; made "scripts/run-agent.sh"
+  fi
+
+  JOB_RUNNER="$AGENTS_DIR/scripts/run-scheduled.sh"
+  if [ -f "$JOB_RUNNER" ]; then kept "scripts/run-scheduled.sh"; else
+    cat > "$JOB_RUNNER" <<'RUNNER'
+#!/usr/bin/env bash
+# run-scheduled.sh <job-id> <script> <timeout-sec> - run a scheduled job the
+# way the scheduler would. Called by the dashboard's Run button on a job.
+set -uo pipefail
+JOB="${1:?usage: run-scheduled.sh <job-id> <script> [timeout-sec]}"
+SCRIPT="${2:?missing script}"
+TIMEOUT="${3:-1800}"
+AGENTS_DIR="${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}"
+DASHBOARD_DIR="${DASHBOARD_DIR:-$HOME/agent-dashboard}"
+RECORDER="$DASHBOARD_DIR/bin/record-run"
+
+CMD=("$AGENTS_DIR/scripts/$SCRIPT")
+[ -x "${CMD[0]}" ] || CMD=(bash "$AGENTS_DIR/scripts/$SCRIPT")
+command -v timeout >/dev/null && CMD=(timeout "$TIMEOUT" "${CMD[@]}")
+
+if [ -x "$RECORDER" ]; then
+  AGENTS_DIR="$AGENTS_DIR" exec "$RECORDER" "$JOB" "${CMD[@]}"
+fi
+exec "${CMD[@]}"
+RUNNER
+    chmod +x "$JOB_RUNNER"; made "scripts/run-scheduled.sh"
+  fi
+
+  SCHEDULE="$AGENTS_DIR/scripts/schedule.json"
+  if [ -f "$SCHEDULE" ]; then kept "scripts/schedule.json"; else
+    printf '{\n  "version": 1,\n  "jobs": []\n}\n' > "$SCHEDULE"; made "scripts/schedule.json"
+  fi
+  say ""
+  say "  The scaffolded runners assume kiro-cli. Edit the RUN line for your setup."
+  say "  Reload the dashboard page: the Run buttons are enabled now."
+  say ""
+fi
+
+if [ "$DO_SERVICE" -eq 1 ]; then
+  say "Service:"
+  PY="$REPO_DIR/backend/.venv/bin/python"
+  [ -x "$PY" ] || { say "  backend/.venv missing - run 'cd backend && uv sync' first"; exit 1; }
+  case "$(uname -s)" in
+    Darwin)
+      LABEL="com.agent-dashboard.server"
+      PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+      if [ -f "$PLIST" ]; then kept "$PLIST"; else
+        cat > "$PLIST" <<PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$PY</string><string>-m</string><string>uvicorn</string>
+        <string>dashboard.main:app</string><string>--port</string><string>$PORT</string>
+    </array>
+    <key>WorkingDirectory</key><string>$REPO_DIR/backend</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>30</integer>
+    <key>StandardOutPath</key><string>$AGENTS_DIR/logs/agent-dashboard.log</string>
+    <key>StandardErrorPath</key><string>$AGENTS_DIR/logs/agent-dashboard.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key><string>$HOME</string>
+        <key>DASHBOARD_AGENTS_DIR</key><string>$AGENTS_DIR</string>
+    </dict>
+</dict>
+</plist>
+PLISTEOF
+        made "$PLIST"
+      fi
+      # bootstrap is idempotent enough: a live label is reported, not replaced
+      if launchctl list "$LABEL" >/dev/null 2>&1; then
+        say "  KEPT    service already loaded ($LABEL)"
+      else
+        launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null \
+          && say "  LOADED  $LABEL" || say "  could not load - try: launchctl bootstrap gui/\$(id -u) $PLIST"
+      fi
+      say ""
+      say "  status:  launchctl list | grep $LABEL"
+      say "  restart: launchctl kickstart -k gui/\$(id -u)/$LABEL"
+      say "  remove:  launchctl bootout gui/\$(id -u)/$LABEL"
+      ;;
+    Linux)
+      UNIT_DIR="$HOME/.config/systemd/user"; UNIT="$UNIT_DIR/agent-dashboard.service"
+      mkdir -p "$UNIT_DIR"
+      if [ -f "$UNIT" ]; then kept "$UNIT"; else
+        cat > "$UNIT" <<UNITEOF
+[Unit]
+Description=Agent Dashboard
+After=network.target
+
+[Service]
+WorkingDirectory=$REPO_DIR/backend
+Environment=DASHBOARD_AGENTS_DIR=$AGENTS_DIR
+ExecStart=$PY -m uvicorn dashboard.main:app --port $PORT
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNITEOF
+        made "$UNIT"
+      fi
+      say "  enable:  systemctl --user daemon-reload && systemctl --user enable --now agent-dashboard"
+      say "  note:    WSL2 needs 'systemd=true' in /etc/wsl.conf, or keep a session open"
+      ;;
+    *) say "  unsupported platform for automatic service install: $(uname -s)" ;;
+  esac
+fi
+
+say "Done. Nothing existing was overwritten."
