@@ -3,7 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "react-router-dom"
 import { Play, Search, SquareTerminal } from "lucide-react"
 import { toast } from "sonner"
-import { api, relativeTime } from "@/lib/api"
+import { RUNNER_HINT, api, relativeTime } from "@/lib/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -39,6 +39,7 @@ export default function AgentsPage() {
 
   if (!data) return null
 
+  const canRun = data.capabilities?.run_agent ?? true
   const chip = (label: string, f: Facet, count: number) => (
     <button
       onClick={() => setFacet(facet === f ? "all" : f)}
@@ -109,7 +110,8 @@ export default function AgentsPage() {
                   )}
                   <Button size="sm" variant="ghost" className="h-6 px-2"
                     onClick={(e) => { e.stopPropagation(); trigger.mutate(a.name) }}
-                    disabled={trigger.isPending || a.is_running} title="Run now">
+                    disabled={!canRun || trigger.isPending || a.is_running}
+                    title={canRun ? "Run now" : RUNNER_HINT}>
                     <Play className="size-3.5" />
                   </Button>
                 </div>

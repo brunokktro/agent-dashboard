@@ -24,6 +24,19 @@ def _store(settings: Annotated[Settings, Depends(get_settings)]) -> Datastore:
 Store = Annotated[Datastore, Depends(_store)]
 
 
+def _runner_capabilities(settings: Settings) -> dict[str, bool]:
+    """Which Run actions the observed ecosystem can actually perform.
+
+    Triggering delegates to run-agent.sh / run-scheduled.sh, which belong to
+    the ecosystem (this dashboard only observes). The UI uses this to disable
+    a button instead of offering a click that can only fail with 503.
+    """
+    return {
+        "run_agent": (settings.scripts_dir / "run-agent.sh").is_file(),
+        "run_job": (settings.scripts_dir / "run-scheduled.sh").is_file(),
+    }
+
+
 # ── Read endpoints ───────────────────────────────────────────────────
 @router.get("/health")
 def api_health_liveness(settings: Annotated[Settings, Depends(get_settings)]):
@@ -44,7 +57,7 @@ def api_apphost(settings: Annotated[Settings, Depends(get_settings)]):
 
 
 @router.get("/api/overview")
-def api_overview(store: Store):
+def api_overview(store: Store, settings: Annotated[Settings, Depends(get_settings)]):
     agents = store.load_agents()
     running = store.active_locks()
     sched = store.load_schedule()
@@ -116,6 +129,7 @@ def api_overview(store: Store):
             "timeline": store.timeline(conn),
             "schedule": schedule,
             "chart": store.daily_chart(conn),
+            "capabilities": _runner_capabilities(settings),
         }
 
 
@@ -147,6 +161,7 @@ def api_agent(name: str, store: Store, settings: Annotated[Settings, Depends(get
         "runs": runs,
         "job": ({"id": job["id"], "cron": job["cron"],
                  "timeout_sec": job.get("timeout_sec", 1800)} if job else None),
+        "capabilities": _runner_capabilities(settings),
     }
 
 
@@ -209,6 +224,7 @@ def api_supervisor(store: Store, settings: Annotated[Settings, Depends(get_setti
                 (j["id"],)).fetchone()
             schedule.append({**j, "last_run": dict(last) if last else None})
     return {"status": status, "pid": pid, "uptime": uptime,
+            "capabilities": _runner_capabilities(settings),
             "today_runs": today_runs, "total_runs": total_runs, "schedule": schedule}
 
 

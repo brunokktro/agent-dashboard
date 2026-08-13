@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { CalendarClock, Play, Search } from "lucide-react"
 import { toast } from "sonner"
-import { api, relativeTime, type ScheduleJob } from "@/lib/api"
+import { RUNNER_HINT, api, relativeTime, type ScheduleJob } from "@/lib/api"
 import { countdown, humanizeCron, nextRun } from "@/lib/cron"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -252,7 +252,8 @@ export default function SupervisorPage() {
                   <Button
                     className="flex-1"
                     onClick={() => { trigger.mutate(selected.id); setSelected(null) }}
-                    disabled={trigger.isPending}
+                    disabled={!(data.capabilities?.run_job ?? true) || trigger.isPending}
+                    title={(data.capabilities?.run_job ?? true) ? "Run now" : RUNNER_HINT}
                   >
                     <Play className="size-4" /> Run now
                   </Button>

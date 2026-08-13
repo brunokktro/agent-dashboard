@@ -47,6 +47,19 @@ export interface ScheduleJob {
   is_running?: boolean
 }
 
+/** Which Run actions the observed ecosystem can perform: triggering delegates
+ *  to run-agent.sh / run-scheduled.sh, which the ecosystem owns, not this app. */
+export interface Capabilities {
+  run_agent: boolean
+  run_job: boolean
+}
+
+/** Why a Run button is disabled - shown as its tooltip. */
+export const RUNNER_HINT =
+  "Disabled: this ecosystem has no runner script. Triggering needs " +
+  "scripts/run-agent.sh (agents) or scripts/run-scheduled.sh (jobs) in your " +
+  "DASHBOARD_AGENTS_DIR - see 'Runner scripts' in the README."
+
 export interface Overview {
   agents: AgentSummary[]
   metrics: { total_runs: number; ok_24h: number; fail_24h: number; running: string[] }
@@ -54,6 +67,7 @@ export interface Overview {
   timeline: RunRow[]
   schedule: ScheduleJob[]
   chart: { day: string; date: string; ok: number; fail: number }[]
+  capabilities: Capabilities
 }
 
 export interface AgentDetail {
@@ -68,6 +82,7 @@ export interface AgentDetail {
   stats: AgentStats
   runs: RunRow[]
   job: { id: string; cron: string; timeout_sec: number } | null
+  capabilities: Capabilities
 }
 
 export interface QueueItem {
@@ -105,6 +120,7 @@ export interface SupervisorData {
   today_runs: number
   total_runs: number
   schedule: (ScheduleJob & { script?: string })[]
+  capabilities: Capabilities
 }
 
 export interface LogFile {

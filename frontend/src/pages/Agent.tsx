@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom"
 import { lazy, Suspense, useState } from "react"
 import { ArrowLeft, Copy, Play, SquareTerminal } from "lucide-react"
 import { toast } from "sonner"
-import { api, fmtDuration, relativeTime } from "@/lib/api"
+import { RUNNER_HINT, api, fmtDuration, relativeTime } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -55,7 +55,9 @@ export default function AgentPage() {
           <Button variant="outline" onClick={() => setShowTerminal(!showTerminal)}>
             <SquareTerminal className="size-4" /> Terminal
           </Button>
-          <Button onClick={() => trigger.mutate()} disabled={trigger.isPending}>
+          <Button onClick={() => trigger.mutate()}
+            disabled={!(data.capabilities?.run_agent ?? true) || trigger.isPending}
+            title={(data.capabilities?.run_agent ?? true) ? "Run now" : RUNNER_HINT}>
             <Play className="size-4" /> Run now
           </Button>
         </div>

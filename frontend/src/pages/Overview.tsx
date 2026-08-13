@@ -4,7 +4,7 @@ import { AlertTriangle, CheckCircle2, Info, Play, XCircle } from "lucide-react"
 import { Bar, BarChart, ResponsiveContainer, Tooltip as ChartTooltip, XAxis } from "recharts"
 import { toast } from "sonner"
 import { useState } from "react"
-import { api, fmtDuration, relativeTime } from "@/lib/api"
+import { RUNNER_HINT, api, fmtDuration, relativeTime } from "@/lib/api"
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog"
@@ -52,6 +52,7 @@ export default function OverviewPage() {
   if (isLoading || !data) return <OverviewSkeleton />
 
   const { metrics, alerts, agents, timeline, chart } = data
+  const canRun = data.capabilities?.run_agent ?? true
 
   if (metrics.total_runs === 0 && agents.length === 0) {
     return (
@@ -73,8 +74,7 @@ export default function OverviewPage() {
 
   return (
     <div className="space-y-6">
-      {/* Metrics */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      {/* Metrics */}      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <StatCard label="Total runs" value={metrics.total_runs.toLocaleString()} />
         <StatCard label="OK · 24h" value={metrics.ok_24h} tone="ok" />
         <StatCard label="Failed · 24h" value={metrics.fail_24h} tone={metrics.fail_24h ? "fail" : undefined} />
@@ -218,8 +218,8 @@ export default function OverviewPage() {
                     variant="ghost"
                     className="h-6 px-2"
                     onClick={(e) => { e.preventDefault(); e.stopPropagation(); trigger.mutate(a.name) }}
-                    disabled={trigger.isPending || a.is_running}
-                    title="Run now"
+                    disabled={!canRun || trigger.isPending || a.is_running}
+                    title={canRun ? "Run now" : RUNNER_HINT}
                   >
                     <Play className="size-3.5" />
                   </Button>

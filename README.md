@@ -171,7 +171,7 @@ The dashboard **observes** your ecosystem; it does not ship an agent runtime. Th
 | `run-agent.sh <agent-name> run --no-interactive` | the Run button on an agent | executes the agent once; stdout/stderr are captured to `logs/adhoc-<agent>-<stamp>.log` |
 | `run-scheduled.sh <job-id> <script> <timeout-sec>` | the Run button on a scheduled job | executes the job the same way the scheduler would (and should record the run into `runs.db`, e.g. via `bin/record-run`) |
 
-If a script is absent, the API answers `503` explaining exactly which file is missing - everything else (Overview, Health, Logs, Queue, diagnosis) works without them. A minimal `run-agent.sh` for kiro-cli users:
+If a script is absent, the Run buttons render **disabled**, with a tooltip naming the file you need - the API also answers `503` with the same detail for anyone calling it directly. Everything else (Overview, Health, Logs, Queue, diagnosis) works without them. A minimal `run-agent.sh` for kiro-cli users:
 
 ```bash
 #!/usr/bin/env bash

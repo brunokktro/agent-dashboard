@@ -139,7 +139,8 @@ const SECTIONS: Section[] = [
         body: (
           <UL items={[
             "Searchable grid of every agent, with facet chips: Running, Scheduled (has a cron job), Chat-ready (has a kiro-cli JSON config).",
-            "Play button triggers a background run; the card glows blue while running.",
+            "The whole card is clickable - it opens the agent's page. The inner buttons act on the agent without navigating.",
+            "Play button triggers a background run; the card glows blue while running. It renders DISABLED when your ecosystem has no scripts/run-agent.sh - the tooltip names the file, since triggering is the ecosystem's job, not the dashboard's.",
             "Terminal icon (chat-ready agents) jumps straight to that agent's page with the terminal already open.",
           ]} />
         ),

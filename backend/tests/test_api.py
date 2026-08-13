@@ -9,7 +9,8 @@ def test_overview_shape(client):
     r = client.get("/api/overview")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"agents", "metrics", "alerts", "timeline", "schedule", "chart"}
+    assert set(body) == {"agents", "metrics", "alerts", "timeline", "schedule",
+                         "chart", "capabilities"}
     assert body["metrics"]["total_runs"] == 4
     assert len(body["agents"]) == 2
     assert len(body["chart"]) == 7
@@ -173,3 +174,29 @@ def test_health_endpoint(client):
     assert isinstance(body["port"], int)
     # /api/apphost mirrors it under /api/ - app-shell proxies only forward /api/*
     assert client.get("/api/apphost").json() == body
+
+
+def test_overview_reports_runner_capabilities(client, ecosystem):
+    """The Run buttons delegate to runner scripts owned by the observed
+    ecosystem. The UI must know whether they exist so it can disable the
+    button instead of offering a click that always 503s."""
+    caps = client.get("/api/overview").json()["capabilities"]
+    assert caps == {"run_agent": False, "run_job": False}
+
+    (ecosystem.agents_dir / "scripts" / "run-agent.sh").write_text("#!/bin/sh\n")
+    caps = client.get("/api/overview").json()["capabilities"]
+    assert caps["run_agent"] is True and caps["run_job"] is False
+
+
+def test_supervisor_reports_runner_capabilities(client, ecosystem):
+    caps = client.get("/api/supervisor").json()["capabilities"]
+    assert caps["run_job"] is False
+    (ecosystem.agents_dir / "scripts" / "run-scheduled.sh").write_text("#!/bin/sh\n")
+    assert client.get("/api/supervisor").json()["capabilities"]["run_job"] is True
+
+
+def test_agent_detail_reports_runner_capabilities(client, ecosystem):
+    caps = client.get("/api/agent/alpha-agent").json()["capabilities"]
+    assert caps["run_agent"] is False
+    (ecosystem.agents_dir / "scripts" / "run-agent.sh").write_text("#!/bin/sh\n")
+    assert client.get("/api/agent/alpha-agent").json()["capabilities"]["run_agent"] is True
