@@ -150,6 +150,11 @@ Every message: the `:kiro:` emoji, then the text in italics. Slack mrkdwn uses
 Blank line between blocks. Whitespace is legibility. No wall of text, no
 sections that repeat what was already said.
 
+**Never post an empty or whitespace-only message.** Observed in a real
+conversation: a compose step produced no text and the post went out anyway,
+leaving a blank bubble in someone's DM. Check the text is non-empty before
+posting, and if there is nothing to say, say nothing at all.
+
 ### Language
 
 Detect and mirror:
