@@ -90,9 +90,16 @@ If you use [KiroCrew](https://kiro.dev/docs/crew/), this dashboard is also packa
 **Where the built bundles live.** `main` never tracks build output - it is a source branch. The App Store installs from the **`release`** branch, which is `main` plus one generated commit carrying the built `frontend/dist` and `ui/dist`, so an install needs no Node on the target machine (the installer never runs a build). That branch is produced, never hand-edited:
 
 ```bash
-bin/make-release            # build both bundles, publish the release branch, verify by blob hash
+bin/make-release            # build both bundles, publish the release branch, tag the source commit, verify by blob hash
 bin/make-release --dry-run  # show what would be published
 ```
+
+**Release process**, so every version stays traceable:
+
+1. Bump the version in `app.json`, `backend/pyproject.toml` and `backend/src/dashboard/__init__.py` (a test fails if they drift).
+2. `bin/release-notes --save` - writes `docs/releases/<version>.md`: the commits behind the release, grouped by type. That is the internal record.
+3. Curate the user-facing entry in [`CHANGELOG.md`](CHANGELOG.md) from it.
+4. `bin/make-release` - publishes the `release` branch and creates the `v<version>` git tag on the source commit. An existing tag is never moved: a published version is immutable.
 
 Until then (or for development), install from a local clone:
 

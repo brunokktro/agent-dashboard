@@ -18,6 +18,24 @@ from .streams import router as streams_router
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
+# Cache policy for a hashed-asset SPA, and the reason it matters here: without
+# it the browser heuristically caches index.html, keeps pointing at the PREVIOUS
+# bundle hash, and the user stays on the old app after an update - which would
+# quietly defeat the update-check button ("update available" -> pull -> still
+# the old UI). So the shell always revalidates (cheap: ETag answers 304), while
+# the fingerprinted assets are immutable by construction.
+_HTML_CACHE = "no-cache"                          # revalidate every load
+_ASSET_CACHE = "public, max-age=31536000, immutable"  # the hash IS the version
+
+
+class _HashedAssets(StaticFiles):
+    """StaticFiles that marks fingerprinted files as immutable."""
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = _ASSET_CACHE
+        return resp
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Agent Dashboard", version=__version__)
@@ -28,15 +46,19 @@ def create_app() -> FastAPI:
     app.include_router(pipe_router)
 
     if FRONTEND_DIST.exists():
-        app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+        app.mount("/assets", _HashedAssets(directory=FRONTEND_DIST / "assets"),
+                  name="assets")
 
         @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str) -> FileResponse:
             """Serve the SPA for any non-API route (client-side routing)."""
             candidate = FRONTEND_DIST / full_path
             if full_path and candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(FRONTEND_DIST / "index.html")
+                # non-hashed extras (favicon, help screenshots): revalidate too,
+                # they are replaced in place by a rebuild
+                return FileResponse(candidate, headers={"Cache-Control": _HTML_CACHE})
+            return FileResponse(FRONTEND_DIST / "index.html",
+                                headers={"Cache-Control": _HTML_CACHE})
 
     return app
 

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# release-notes - the commits behind a release, grouped, ready to curate.
+#
+# The CHANGELOG says WHAT changed for a user; this says WHICH COMMITS produced
+# it, so every release stays traceable to the work. Run it before writing a
+# CHANGELOG entry, and keep the output in docs/releases/ as the internal record.
+#
+#   bin/release-notes                 # commits since the latest release tag
+#   bin/release-notes v3.0.0          # commits since that tag
+#   bin/release-notes v3.0.0 v3.1.0   # between two tags
+#   bin/release-notes --save          # also write docs/releases/<version>.md
+#
+# Reads git only - it never writes to the repo unless you pass --save.
+set -uo pipefail
+
+cd "$(dirname "$0")/.." || exit 1
+SAVE=0
+ARGS=()
+for a in "$@"; do
+  case "$a" in
+    --save) SAVE=1 ;;
+    *) ARGS+=("$a") ;;
+  esac
+done
+
+VERSION="$(python3 -c "import json;print(json.load(open('app.json'))['version'])")"
+FROM="${ARGS[0]:-$(git tag --list 'v*' --sort=-v:refname | head -1)}"
+TO="${ARGS[1]:-HEAD}"
+RANGE="${FROM:+$FROM..}$TO"
+
+emit() {
+  echo "# Release $VERSION"
+  echo
+  echo "Range: \`${RANGE}\`  ·  generated $(date '+%Y-%m-%d %H:%M')"
+  echo
+  local total
+  total="$(git log --oneline "$RANGE" 2>/dev/null | wc -l | tr -d ' ')"
+  echo "$total commit(s)."
+  echo
+  # conventional-commit groups, in the order a reader cares about
+  for pair in "feat:Features" "fix:Fixes" "refactor:Refactors" \
+              "docs:Documentation" "test:Tests" "chore:Chores" "release:Release"; do
+    local prefix="${pair%%:*}" title="${pair#*:}" body
+    body="$(git log --pretty=format:'- %s (%h)' "$RANGE" 2>/dev/null \
+            | grep -E "^- ${prefix}(\(|:)" || true)"
+    [ -n "$body" ] || continue
+    echo "## $title"
+    echo
+    printf '%s\n' "$body" | sed -E "s/^- ${prefix}(\([^)]*\))?: /- /"
+    echo
+  done
+  # anything that did not follow the convention still has to show up
+  local rest
+  rest="$(git log --pretty=format:'- %s (%h)' "$RANGE" 2>/dev/null \
+          | grep -vE "^- (feat|fix|refactor|docs|test|chore|release)(\(|:)" || true)"
+  if [ -n "$rest" ]; then
+    echo "## Other"
+    echo
+    printf '%s\n' "$rest"
+    echo
+  fi
+  echo "## Files touched"
+  echo
+  git diff --stat "$RANGE" 2>/dev/null | tail -1
+}
+
+if [ "$SAVE" -eq 1 ]; then
+  mkdir -p docs/releases
+  OUT="docs/releases/$VERSION.md"
+  emit > "$OUT"
+  echo "wrote $OUT"
+else
+  emit
+fi

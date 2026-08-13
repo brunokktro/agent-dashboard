@@ -303,3 +303,27 @@ def test_version_endpoint_is_never_cached(client):
     for url in ("/api/version", "/api/version?check=1"):
         r = client.get(url)
         assert r.headers.get("cache-control") == "no-store", url
+
+
+def test_spa_cache_policy(tmp_path, monkeypatch):
+    """Regression: index.html without Cache-Control gets heuristically cached,
+    keeps pointing at the previous bundle hash, and the user stays on the old
+    app after an update - silently defeating the update check. The shell must
+    revalidate; fingerprinted assets may be cached forever."""
+    from fastapi.testclient import TestClient
+
+    import dashboard.main as main_mod
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html><div id='root'></div></html>")
+    (dist / "assets" / "index-abc123.js").write_text("console.log(1)")
+    (dist / "favicon.svg").write_text("<svg/>")
+    monkeypatch.setattr(main_mod, "FRONTEND_DIST", dist)
+    c = TestClient(main_mod.create_app())
+
+    assert c.get("/").headers["cache-control"] == "no-cache"
+    assert c.get("/agents").headers["cache-control"] == "no-cache"   # SPA route
+    assert c.get("/favicon.svg").headers["cache-control"] == "no-cache"  # replaced in place
+    asset = c.get("/assets/index-abc123.js").headers["cache-control"]
+    assert "immutable" in asset and "max-age=31536000" in asset
