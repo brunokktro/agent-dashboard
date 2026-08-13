@@ -57,7 +57,14 @@ def api_apphost(settings: Annotated[Settings, Depends(get_settings)]):
 
 
 def _fetch_upstream_version(url: str, timeout: int = 8) -> str:
-    """Read the upstream app.json and return its version. Network only."""
+    """Read the upstream app.json and return its version. Network only.
+
+    Deliberately uses raw.githubusercontent (no rate limit, no token) rather
+    than the REST API (60 calls/hour unauthenticated). The trade-off is a CDN
+    cache of a few minutes per branch, so a check right after a release can
+    still report the previous version - acceptable for an update notice, and
+    the reason the button never claims to be authoritative about "now".
+    """
     import json as _json
     import urllib.request
     req = urllib.request.Request(url, headers={"User-Agent": "agent-dashboard"})
