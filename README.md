@@ -81,6 +81,24 @@ bin/record-run lint-check npm run lint
 
 Works from cron, launchd, Makefiles, CI, Claude Code hooks. Recorded runs appear everywhere: Overview, Health, heatmap, diagnosis.
 
+### Run it as a KiroCrew app
+
+If you use [KiroCrew](https://kiro.dev/docs/crew/), this dashboard is also packaged as a **Crew App** - the `app.json` at the repo root is the manifest. Installed as an app, it shows up in the Crew sidebar with everything working (terminals and live streams included), the backend is spawned and health-checked by the gateway on an automatic port, and **no Node or manual build is needed** - the built UI ships in the repo.
+
+> **Coming to the App Store registry:** agent-dashboard has been submitted to the official KiroCrew App Registry ([kirodotdev/KiroCrew#3241](https://github.com/kirodotdev/KiroCrew/pull/3241)). Once merged, it installs with one click from the App Store tab.
+
+Until then (or for development), install from a local clone:
+
+```bash
+# third-party apps must be explicitly allowed once, then restart the gateway
+#   ~/.kiro/crew/config.json -> "agent": { "apps_allow_third_party": true }
+kirocrew app install /path/to/agent-dashboard
+kirocrew app enable agent-dashboard
+kirocrew restart
+```
+
+Open the Crew dashboard and click **Agent Dashboard** in the sidebar. Per-app settings (hide agents you do not operate, site-specific failure hints) live in the host's `data/config.json` - see [Configuration](#configuration).
+
 ## Support agent
 
 `agents/dashboard-support` is an agent that installs and troubleshoots **this** project: a `.md` spec plus a kiro-cli `.json` config, with the command-level playbooks under `agents/dashboard-support-data/references/`. Link both files into your ecosystem and it shows up in the dashboard like any other agent, chat and terminal included:

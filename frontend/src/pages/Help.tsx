@@ -70,6 +70,34 @@ const SECTIONS: Section[] = [
             <><K>scripts/schedule.json</K> - <K>{"{jobs: [{id, script, cron, timeout_sec, enabled}]}"}</K></>,
             <><K>locks/*.lock</K> - PID files marking running agents</>,
             <><K>*.md</K> - agent specs with YAML frontmatter (<K>name</K>, <K>description</K>)</>,
+            <><K>*.json</K> - bare kiro-cli agent configs (with <K>name</K> + <K>tools</K>) are
+            first-class agents too; an .md + .json pair counts once</>,
+          ]} />
+        ),
+      },
+      {
+        id: "settings", title: "Settings",
+        body: (
+          <UL items={[
+            <>Everything is environment-driven: <K>DASHBOARD_AGENTS_DIR</K> (which ecosystem to
+            observe), <K>DASHBOARD_PORT</K>, <K>DASHBOARD_EXCLUDE_AGENTS</K> (glob patterns to hide
+            agents you do not operate), <K>DASHBOARD_EXTRA_HINTS</K> (site-specific failure hints
+            for the diagnosis).</>,
+            <>Running as a KiroCrew app, use the per-app settings file instead - the host writes
+            <K>data/config.json</K> and the same keys (<K>exclude_agents</K>, <K>extra_hints</K>,
+            thresholds) override the environment.</>,
+            "The README's Configuration table is the complete reference.",
+          ]} />
+        ),
+      },
+      {
+        id: "kirocrew", title: "Run it inside KiroCrew",
+        body: (
+          <UL items={[
+            "This dashboard is also a KiroCrew app: install it from the App Store registry (or from a local clone) and it appears in the sidebar, terminals included.",
+            <>One-click by design: the built UI ships in the repo, so the install needs no Node on
+            your machine; the backend spawns on an automatic port with a <K>/health</K> check.</>,
+            "The sidebar page embeds the dashboard same-origin, which keeps the WebSocket terminals and live log streams working.",
           ]} />
         ),
       },
@@ -150,6 +178,17 @@ const SECTIONS: Section[] = [
             "Click any card for the full detail panel (complete input, result/error, timestamps, actions).",
             "Failed cards preview the error inline; hover shows quick Retry/Cancel.",
             "Enqueue: pick the agent from a dropdown, describe the task, set priority - done.",
+          ]} />
+        ),
+      },
+      {
+        id: "backlog-reader", title: "Backlog reader & decisions",
+        body: (
+          <UL items={[
+            "Click any backlog or review-note card to open the reader: side table of contents with scroll-spy, J/K (or arrows) to move between items, and the file path one click away.",
+            "Review notes carry a decision bar: Approve flips the item's autonomy to auto (applied on the agent's next run), Discuss saves your feedback into the note for regeneration, Reject stops it.",
+            "Backlog items expose the autonomy switch (auto / review / blocked) and a soft Delete - items move to backlog/deleted/, nothing is destroyed.",
+            "Drag and drop cards in the 'Active backlog' column to reorder them - the order persists in each file's frontmatter and survives a refresh.",
           ]} />
         ),
       },

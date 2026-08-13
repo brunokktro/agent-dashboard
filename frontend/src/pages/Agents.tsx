@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
-import { Link } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { Play, Search, SquareTerminal } from "lucide-react"
 import { toast } from "sonner"
 import { api, relativeTime } from "@/lib/api"
@@ -13,6 +13,7 @@ import { StatusBadge, TrendIcon, scoreColor } from "@/components/shared"
 type Facet = "all" | "running" | "scheduled" | "chat"
 
 export default function AgentsPage() {
+  const navigate = useNavigate()
   const { data } = useQuery({ queryKey: ["overview"], queryFn: api.overview })
   const [search, setSearch] = useState("")
   const [facet, setFacet] = useState<Facet>("all")
@@ -67,7 +68,13 @@ export default function AgentsPage() {
         {agents.map((a) => (
           <Card
             key={a.name}
-            className={a.is_running ? "border-blue-500/50 shadow-[0_0_12px_-3px_rgb(59_130_246/0.5)]" : ""}
+            role="link"
+            tabIndex={0}
+            onClick={() => navigate(`/agent/${a.name}`)}
+            onKeyDown={(e) => { if (e.key === "Enter") navigate(`/agent/${a.name}`) }}
+            className={`cursor-pointer transition-all hover:border-foreground/25 hover:shadow ${
+              a.is_running ? "border-blue-500/50 shadow-[0_0_12px_-3px_rgb(59_130_246/0.5)]" : ""
+            }`}
           >
             <CardContent className="p-4">
               <div className="flex items-start justify-between gap-2">
@@ -94,11 +101,14 @@ export default function AgentsPage() {
                 <div className="flex items-center">
                   {a.has_config && (
                     <Button asChild size="sm" variant="ghost" className="h-6 px-2" title="Open terminal">
-                      <Link to={`/agent/${a.name}?terminal=1`}><SquareTerminal className="size-3.5" /></Link>
+                      <Link to={`/agent/${a.name}?terminal=1`}
+                        onClick={(e) => e.stopPropagation()}>
+                        <SquareTerminal className="size-3.5" />
+                      </Link>
                     </Button>
                   )}
                   <Button size="sm" variant="ghost" className="h-6 px-2"
-                    onClick={() => trigger.mutate(a.name)}
+                    onClick={(e) => { e.stopPropagation(); trigger.mutate(a.name) }}
                     disabled={trigger.isPending || a.is_running} title="Run now">
                     <Play className="size-3.5" />
                   </Button>
