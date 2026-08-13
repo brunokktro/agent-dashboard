@@ -5,7 +5,13 @@
   "description": "Local-first observability for your AI agent fleet: run history and health scores, day-by-hour heatmaps, P50/P95/P99 durations, failure diagnosis with probable-cause hints, work queue, scheduler view, live logs and real terminals. Observes the ecosystem it is pointed at (runs.db, queue/, schedule.json) and never fabricates it.",
   "author": "brunokktro",
   "license": "MIT",
-  "tags": ["agents", "observability", "dashboard", "monitoring", "terminal"],
+  "tags": [
+    "agents",
+    "observability",
+    "dashboard",
+    "monitoring",
+    "terminal"
+  ],
   "highlights": [
     "Run history with health scores, trends and a day-by-hour failure heatmap",
     "Failure diagnosis: isolates the failing run's own log window and suggests probable causes",
@@ -27,7 +33,9 @@
     "docs/img/pipe.png"
   ],
   "permissions": {
-    "api": ["/apps/agent-dashboard/api"]
+    "api": [
+      "/apps/agent-dashboard/api"
+    ]
   },
   "ui": {
     "entry": "dist/index.mjs",
@@ -43,7 +51,7 @@
     "entryPoint": "server.py",
     "type": "asgi",
     "port": "auto",
-    "healthCheck": "/health"
+    "healthCheck": "/healthz"
   },
   "setup": {
     "onEnable": "cd frontend && [ -f dist/index.html ] || (npm ci --no-audit --no-fund && npm run build)",
@@ -53,16 +61,29 @@
       "properties": {
         "exclude_agents": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Glob patterns of agent names to hide from every view (e.g. vendor-installed agents you do not operate)"
         },
         "extra_hints": {
           "type": "array",
-          "items": { "type": "array", "items": { "type": "string" } },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "description": "Site-specific failure hints for the run diagnosis: [regex, hint] pairs matched against a failing run's log"
         },
-        "big_log_mb": { "type": "integer", "description": "Large-log alert threshold (MB)" },
-        "stuck_after_minutes": { "type": "integer", "description": "Stuck queue item threshold (minutes)" }
+        "big_log_mb": {
+          "type": "integer",
+          "description": "Large-log alert threshold (MB)"
+        },
+        "stuck_after_minutes": {
+          "type": "integer",
+          "description": "Stuck queue item threshold (minutes)"
+        }
       }
     }
   }

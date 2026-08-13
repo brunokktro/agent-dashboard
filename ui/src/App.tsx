@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react'
  * KiroCrew proxy is HTTP-only and cannot upgrade WebSocket connections.
  *
  * The backend port is dynamic (KiroCrew assigns it at spawn), so we discover
- * it through the proxied /health endpoint, which reports the effective port.
+ * it through the proxied /api/apphost endpoint, which reports the effective port.
  */
 export default function AgentDashboard() {
   const api = useAppApi()

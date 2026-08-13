@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from .config import Settings, get_settings
@@ -38,11 +38,16 @@ def _runner_capabilities(settings: Settings) -> dict[str, bool]:
 
 
 # ── Read endpoints ───────────────────────────────────────────────────
-@router.get("/health")
+@router.get("/healthz")
 def api_health_liveness(settings: Annotated[Settings, Depends(get_settings)]):
     """Liveness probe (supervisors like KiroCrew poll this). Reports the
     effective port - under a managed runtime the port is injected via the
-    PORT env var and differs from the configured default."""
+    PORT env var and differs from the configured default.
+
+    Deliberately NOT at ``/health``: that path belongs to the SPA's Health page,
+    and registering an API route there made a page reload answer JSON instead of
+    the app. ``/healthz`` is the conventional spelling for exactly this reason.
+    """
     import os
     port = int(os.environ.get("PORT", settings.port))
     return {"status": "ok", "port": port}
@@ -106,13 +111,19 @@ def _newer(latest: str, current: str) -> bool:
 
 
 @router.get("/api/version")
-def api_version(settings: Annotated[Settings, Depends(get_settings)], check: int = 0):
+def api_version(response: Response,
+                settings: Annotated[Settings, Depends(get_settings)], check: int = 0):
     """Version, and (only when ``check=1``) whether the upstream has a newer one.
 
     The call to GitHub happens ONLY on an explicit check, so the dashboard makes
     no background network requests. A check that fails is reported as an error -
     never as "up to date", which would be a silent false negative.
+
+    Sends ``no-store``: without it the browser heuristically caches this GET and
+    a second click on the button answers from cache without ever asking again -
+    a check that silently stops checking is worse than no check.
     """
+    response.headers["Cache-Control"] = "no-store"
     from . import __version__
     out: dict[str, object] = {"current": __version__, "latest": None,
                               "update_available": False, "checked": False,

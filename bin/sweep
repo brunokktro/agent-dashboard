@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Full sweep against a RUNNING dashboard: every endpoint and every SPA route.
+
+Not a unit test - this hits the real server the way a browser does, so it also
+catches what unit tests cannot: a route that 404s, a payload whose shape the UI
+does not expect, a page that serves JSON instead of the app, a header that lets
+the browser cache something live.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import urllib.error
+import urllib.request
+
+BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:7780"
+ok = bad = 0
+
+
+def get(path: str, timeout: int = 20):
+    """Returns (status, headers, body). Header keys are lowercased: converting
+    r.headers to a plain dict loses its case-insensitive lookup, which silently
+    turned every header assertion below into a false failure."""
+    req = urllib.request.Request(BASE + path, headers={"User-Agent": "sweep"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, {k.lower(): v for k, v in r.headers.items()}, r.read()
+
+
+def check(name: str, fn):
+    global ok, bad
+    try:
+        detail = fn()
+        print(f"  OK    {name}" + (f" - {detail}" if detail else ""))
+        ok += 1
+    except AssertionError as e:
+        print(f"  FAIL  {name} -> {e}")
+        bad += 1
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
+        print(f"  ERROR {name} -> {e}")
+        bad += 1
+
+
+print(f"sweeping {BASE}\n\nAPI payloads:")
+
+
+def api(path, *keys, note=None):
+    def run():
+        st, _, body = get(path)
+        assert st == 200, f"status {st}"
+        d = json.loads(body)
+        for k in keys:
+            assert k in d, f"missing key {k!r}"
+        return note(d) if note else None
+    return run
+
+
+check("/healthz", api("/healthz", "status", "port",
+                     note=lambda d: f"port {d['port']}"))
+check("/api/apphost", api("/api/apphost", "status", "port"))
+check("/api/overview", api("/api/overview", "agents", "metrics", "alerts",
+                           "timeline", "schedule", "chart", "capabilities",
+                           note=lambda d: f"{len(d['agents'])} agents, "
+                                          f"{d['metrics']['total_runs']} runs, "
+                                          f"caps {d['capabilities']}"))
+check("/api/health", api("/api/health", "agents",
+                         note=lambda d: f"{len(d['agents'])} scored"))
+check("/api/queue", api("/api/queue", "counts", "stuck", "items",
+                        note=lambda d: f"counts {d['counts']}"))
+check("/api/supervisor", api("/api/supervisor", "status", "schedule", "capabilities",
+                             note=lambda d: f"{d['status']}, {len(d['schedule'])} jobs"))
+check("/api/logs", api("/api/logs", "files", note=lambda d: f"{len(d['files'])} logs"))
+check("/api/backlog", api("/api/backlog", "active", "done", "review_notes",
+                          note=lambda d: f"{len(d['active'])} active"))
+check("/api/version", api("/api/version", "current", "latest", "update_available",
+                          "checked", "error",
+                          note=lambda d: f"v{d['current']}, checked={d['checked']}"))
+
+
+def version_uncached():
+    st, hdrs, _ = get("/api/version?check=1")
+    assert st == 200
+    assert hdrs.get("cache-control") == "no-store", f"cache-control={hdrs.get('cache-control')}"
+    return "no-store"
+
+
+check("/api/version?check=1 not cacheable", version_uncached)
+
+
+def version_twice():
+    """The bug reported from real use: a second click must check again."""
+    a = json.loads(get("/api/version?check=1")[2])
+    b = json.loads(get("/api/version?check=1")[2])
+    assert a["checked"] and b["checked"], "a repeated check must still check"
+    assert a["latest"] == b["latest"], "two checks disagreed"
+    return f"latest={b['latest']} twice"
+
+
+check("repeated version check", version_twice)
+
+
+def agent_detail():
+    agents = json.loads(get("/api/overview")[2])["agents"]
+    assert agents, "no agents to inspect"
+    name = agents[0]["name"]
+    d = json.loads(get(f"/api/agent/{name}")[2])
+    for k in ("info", "stats", "runs", "job", "capabilities"):
+        assert k in d, f"missing {k}"
+    return f"{name}: {d['stats']['total']} runs"
+
+
+check("/api/agent/{name}", agent_detail)
+
+
+def diagnose_a_failure():
+    ov = json.loads(get("/api/overview")[2])
+    ids = [i["id"] for a in ov["alerts"] for i in (a.get("items") or [])]
+    if not ids:
+        return "no failed run to diagnose (nothing to check)"
+    d = json.loads(get(f"/api/runs/{ids[0]}/diagnose")[2])
+    for k in ("run", "exit_meaning", "hints", "error_lines", "segment_tail"):
+        assert k in d, f"missing {k}"
+    return f"run {ids[0]}: {len(d['hints'])} hints"
+
+
+check("/api/runs/{id}/diagnose", diagnose_a_failure)
+
+
+def unknown_agent_404():
+    try:
+        get("/api/agent/definitely-not-an-agent-xyz")
+    except urllib.error.HTTPError as e:
+        assert e.code == 404, f"expected 404, got {e.code}"
+        return "404"
+    raise AssertionError("expected 404, got 200")
+
+
+check("unknown agent -> 404", unknown_agent_404)
+
+print("\nSPA routes (must serve the app, not JSON):")
+for route in ["/", "/agents", "/queue", "/health", "/supervisor", "/logs",
+              "/console", "/help", "/agent/whatever"]:
+    def spa(r=route):
+        st, hdrs, body = get(r)
+        assert st == 200, f"status {st}"
+        ctype = hdrs.get("content-type", "")
+        assert "html" in ctype, f"content-type {ctype}"
+        assert b"<div id=\"root\"" in body, "not the SPA shell"
+        return None
+    check(route, spa)
+
+print("\nStatic assets the Help tab depends on:")
+for img in ["overview", "agents", "health", "logs", "console", "pipe",
+            "queue", "supervisor"]:
+    def asset(i=img):
+        st, hdrs, body = get(f"/help/{i}.png")
+        assert st == 200, f"status {st}"
+        assert hdrs.get("content-type", "").startswith("image/"), hdrs.get("content-type")
+        assert len(body) > 5000, f"suspiciously small: {len(body)} bytes"
+        return None
+    check(f"/help/{img}.png", asset)
+
+print(f"\n{ok} ok, {bad} failed")
+sys.exit(1 if bad else 0)

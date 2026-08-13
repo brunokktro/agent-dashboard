@@ -167,13 +167,22 @@ def test_diagnose_uses_configured_extra_hints(ecosystem):
 def test_health_endpoint(client):
     """Liveness for supervisors (KiroCrew polls backend.healthCheck).
     Reports the effective port so a shell wrapper can locate the UI."""
-    r = client.get("/health")
+    r = client.get("/healthz")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
     assert isinstance(body["port"], int)
     # /api/apphost mirrors it under /api/ - app-shell proxies only forward /api/*
     assert client.get("/api/apphost").json() == body
+
+
+def test_health_path_belongs_to_the_spa(client):
+    """Regression: an API route at /health hijacked the SPA's Health page - a
+    reload or a direct visit answered JSON instead of the app. The liveness
+    probe lives at /healthz precisely so this path stays the page's."""
+    r = client.get("/health")
+    assert r.status_code != 200 or "application/json" not in r.headers.get("content-type", ""), (
+        "GET /health must not answer JSON - it is the Health page's route")
 
 
 def test_overview_reports_runner_capabilities(client, ecosystem):
@@ -285,3 +294,12 @@ def test_version_is_consistent_across_the_repo():
     assert dashboard.__version__ == app_json == pyproject, (
         f"version drift: __init__={dashboard.__version__} "
         f"app.json={app_json} pyproject={pyproject}")
+
+
+def test_version_endpoint_is_never_cached(client):
+    """Regression: without no-store the browser heuristically caches this GET,
+    so the second click on the button answers from cache and the check silently
+    stops checking."""
+    for url in ("/api/version", "/api/version?check=1"):
+        r = client.get(url)
+        assert r.headers.get("cache-control") == "no-store", url
