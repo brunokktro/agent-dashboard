@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# install-starters - give a brand-new dashboard a heartbeat and a routine.
+#
+# A fresh install observes an empty ecosystem, so it looks dead: no agents, no
+# runs, flat charts. These starters fix that with genuinely useful work, and
+# each one exercises a feature you would otherwise have to take on faith:
+#
+#   heartbeat       every 15 min  proves the server serves the app and the API
+#                                reads your ecosystem - and gives the Overview,
+#                                the heatmap and the health score real data
+#   log-hygiene     weekly        compresses logs past DASHBOARD_BIG_LOG_MB
+#                                (never deletes) - acts on the large-log alert
+#   failure-triage  agent         diagnoses the last 24h of failed runs through
+#                                the dashboard's own /diagnose endpoint
+#   dashboard-support agent       guided install + troubleshooting (see agents/)
+#
+#   bin/install-starters                 # show what would be installed
+#   bin/install-starters --scripts       # scheduled jobs (no LLM needed)
+#   bin/install-starters --agents        # the agent specs (needs kiro-cli)
+#   bin/install-starters --all
+#   bin/install-starters --all --force   # refresh, backing up your copies first
+#
+# Non-destructive: an existing file is reported and skipped; --force moves it to
+# <file>.bak-<timestamp> first. Schedule entries are MERGED - a job id you
+# already have is never rewritten.
+set -uo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+AGENTS_DIR="${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}"
+SRC="$REPO_DIR/starters"
+DO_SCRIPTS=0; DO_AGENTS=0; FORCE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --scripts) DO_SCRIPTS=1; shift ;;
+    --agents)  DO_AGENTS=1; shift ;;
+    --all)     DO_SCRIPTS=1; DO_AGENTS=1; shift ;;
+    --force)   FORCE=1; shift ;;
+    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+say() { printf '%s\n' "$*"; }
+place() {  # place <src> <dst> <label>
+  local src="$1" dst="$2" label="$3"
+  if [ -f "$dst" ]; then
+    if [ "$FORCE" -eq 1 ]; then
+      local bak="$dst.bak-$(date +%Y%m%d-%H%M%S)"
+      mv "$dst" "$bak"; say "  BACKUP  $label -> $(basename "$bak")"
+    else
+      say "  KEPT    $label (already there; --force to refresh)"; return 0
+    fi
+  fi
+  install -m "$4" "$src" "$dst"; say "  CREATED $label"
+}
+
+say "ecosystem: $AGENTS_DIR"
+if [ "$DO_SCRIPTS" -eq 0 ] && [ "$DO_AGENTS" -eq 0 ]; then
+  say ""
+  say "Would install (nothing written yet):"
+  say "  scripts: heartbeat.sh (every 15 min), log-hygiene.sh (weekly)"
+  say "  agents:  failure-triage, dashboard-support"
+  say ""
+  say "Re-run with --scripts, --agents or --all."
+  exit 0
+fi
+
+if [ "$DO_SCRIPTS" -eq 1 ]; then
+  say ""
+  say "Scheduled starters:"
+  mkdir -p "$AGENTS_DIR/scripts" "$AGENTS_DIR/logs"
+  for s in heartbeat log-hygiene; do
+    place "$SRC/scripts/$s.sh" "$AGENTS_DIR/scripts/$s.sh" "scripts/$s.sh" 755
+  done
+
+  # merge schedule entries - never rewrite a job id that already exists
+  SCHEDULE="$AGENTS_DIR/scripts/schedule.json" python3 - <<'PY'
+import json, os
+from pathlib import Path
+p = Path(os.environ["SCHEDULE"])
+data = {"version": 1, "jobs": []}
+if p.is_file():
+    try:
+        data = json.loads(p.read_text())
+    except json.JSONDecodeError:
+        print("  SKIPPED schedule.json (not valid JSON - fix it and re-run)")
+        raise SystemExit(0)
+jobs = data.setdefault("jobs", [])
+have = {j.get("id") for j in jobs}
+wanted = [
+    {"id": "heartbeat", "script": "heartbeat.sh", "cron": "*/15 * * * *",
+     "timeout_sec": 60, "enabled": True,
+     "description": "Proves the dashboard serves the app and reads the ecosystem"},
+    {"id": "log-hygiene", "script": "log-hygiene.sh", "cron": "0 4 * * 0",
+     "timeout_sec": 900, "enabled": True,
+     "description": "Compresses logs past the large-log threshold (never deletes)"},
+]
+added = [w for w in wanted if w["id"] not in have]
+jobs.extend(added)
+if added:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2) + "\n")
+    for w in added:
+        print(f"  SCHEDULED {w['id']} ({w['cron']})")
+for w in wanted:
+    if w["id"] in have:
+        print(f"  KEPT      schedule entry {w['id']} (already yours)")
+PY
+  say ""
+  say "  These are plain shell jobs - no LLM. Your scheduler (or the Supervisor"
+  say "  Run button) executes them through scripts/run-scheduled.sh."
+fi
+
+if [ "$DO_AGENTS" -eq 1 ]; then
+  say ""
+  say "Agent starters:"
+  for a in failure-triage; do
+    for ext in md json; do
+      place "$SRC/agents/$a.$ext" "$AGENTS_DIR/$a.$ext" "$a.$ext" 644
+    done
+  done
+  for ext in md json; do
+    place "$REPO_DIR/agents/dashboard-support.$ext" "$AGENTS_DIR/dashboard-support.$ext" \
+      "dashboard-support.$ext" 644
+  done
+  say ""
+  say "  They show up in the Agents tab immediately. Running them needs kiro-cli"
+  say "  and scripts/run-agent.sh (see bin/init-ecosystem --runners)."
+fi
+
+say ""
+say "Done. Existing files were kept or backed up - nothing was lost."
+say "Anything tied to a system only you can reach (an internal account tool, a"
+say "private API) belongs in YOUR ecosystem, not here: copy a starter as the"
+say "shape and keep the specifics local. See starters/README.md."

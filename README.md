@@ -187,6 +187,21 @@ Works the same on a **fresh clone and on an install you already have running** -
 
 The scaffolded runners assume kiro-cli and wrap each run with `bin/record-run`, which is what makes it appear in the dashboard - edit the one `RUN=` line for your own setup.
 
+### Starter agents and jobs - so day one is not empty
+
+A fresh install observes an empty ecosystem and therefore looks dead. `bin/install-starters` gives it a heartbeat and a routine, with work that is actually useful:
+
+```bash
+bin/install-starters             # show what would be installed
+bin/install-starters --scripts   # heartbeat (every 15 min) + log-hygiene (weekly) - no LLM needed
+bin/install-starters --agents    # failure-triage + dashboard-support (need kiro-cli)
+bin/install-starters --all
+```
+
+`heartbeat` verifies the server serves the app (200 **and** HTML) and that the API reads your ecosystem, which also means the Overview, heatmap and health score have real data from the first quarter hour. `log-hygiene` compresses logs past the large-log threshold and never deletes. `failure-triage` diagnoses the last 24h of failures through the dashboard's own `/diagnose` endpoint. Schedule entries are merged, so a job id you already have is never rewritten.
+
+Details and how to write your own: [`starters/README.md`](starters/README.md). Anything tied to a system only you can reach (internal account tooling, a private API) belongs in your own ecosystem rather than a public repo - the starters ship the shape, you keep the specifics.
+
 ### Scoping which agents you see
 
 A shared agents directory (`~/.kiro/agents` is the default) usually holds agents installed by other tools too. Two ways to narrow it, and they compose:

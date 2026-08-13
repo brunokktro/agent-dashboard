@@ -76,6 +76,21 @@ const SECTIONS: Section[] = [
         ),
       },
       {
+        id: "starters", title: "Starters - so day one is not empty",
+        body: (
+          <UL items={[
+            <><K>bin/install-starters --all</K> installs a small routine that does real work:
+            <K>heartbeat</K> (every 15 min - checks the server serves the app and the API reads
+            your ecosystem, and gives these charts data immediately), <K>log-hygiene</K> (weekly -
+            compresses logs past the threshold, never deletes), plus the <K>failure-triage</K> and
+            <K>dashboard-support</K> agents.</>,
+            "The two scheduled ones are plain shell scripts - no LLM, no kiro-cli. The agents need kiro-cli.",
+            "Schedule entries are merged: a job id you already have is never rewritten, and existing files are kept (--force backs yours up first).",
+            "They double as templates. Anything tied to a system only you can reach belongs in your own ecosystem, not in a public repo.",
+          ]} />
+        ),
+      },
+      {
         id: "keep-running", title: "Keep it running (and enable the Run buttons)",
         body: (
           <UL items={[
