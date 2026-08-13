@@ -1,0 +1,6 @@
+# Runtime deps for the KiroCrew-managed backend (mirrors backend/pyproject.toml).
+# KiroCrew installs these into a per-app .venv on first start.
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+pydantic-settings>=2.6

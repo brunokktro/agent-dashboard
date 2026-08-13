@@ -25,6 +25,24 @@ Store = Annotated[Datastore, Depends(_store)]
 
 
 # ── Read endpoints ───────────────────────────────────────────────────
+@router.get("/health")
+def api_health_liveness(settings: Annotated[Settings, Depends(get_settings)]):
+    """Liveness probe (supervisors like KiroCrew poll this). Reports the
+    effective port - under a managed runtime the port is injected via the
+    PORT env var and differs from the configured default."""
+    import os
+    port = int(os.environ.get("PORT", settings.port))
+    return {"status": "ok", "port": port}
+
+
+@router.get("/api/apphost")
+def api_apphost(settings: Annotated[Settings, Depends(get_settings)]):
+    """Same payload as /health, but under /api/ - app-shell proxies (KiroCrew
+    forwards /apps/<name>/api/* to /api/*) can only reach /api/ paths, and the
+    embedding wrapper needs the effective port to point its iframe."""
+    return api_health_liveness(settings)
+
+
 @router.get("/api/overview")
 def api_overview(store: Store):
     agents = store.load_agents()

@@ -1,0 +1,41 @@
+{
+  "name": "agent-dashboard",
+  "version": "3.0.0-alpha.1",
+  "displayName": "Agent Dashboard",
+  "description": "Local-first observability for your AI agent fleet: run history and health scores, day-by-hour heatmaps, P50/P95/P99 durations, failure diagnosis with probable-cause hints, work queue, scheduler view, live logs and real terminals. Observes the ecosystem it is pointed at (runs.db, queue/, schedule.json) and never fabricates it.",
+  "author": "brunokktro",
+  "license": "MIT",
+  "tags": ["agents", "observability", "dashboard", "monitoring", "terminal"],
+  "highlights": [
+    "Run history with health scores, trends and a day-by-hour failure heatmap",
+    "Failure diagnosis: isolates the failing run's own log window and suggests probable causes",
+    "Work queue with retry/cancel, scheduler view, and a backlog kanban with drag-and-drop",
+    "Real PTY terminals and a pipe mode to drive agents, with durable sessions",
+    "Observes any ecosystem via DASHBOARD_AGENTS_DIR - ships a universal record-run adapter",
+    "Read-mostly by design: the only writes are queue transitions, alert acks and backlog decisions"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": ["/apps/agent-dashboard/api"]
+  },
+  "ui": {
+    "entry": "dist/index.mjs",
+    "pages": [
+      {
+        "route": "/agent-dashboard",
+        "label": "Agent Dashboard",
+        "icon": "LayoutDashboard"
+      }
+    ]
+  },
+  "backend": {
+    "entryPoint": "server.py",
+    "type": "asgi",
+    "port": "auto",
+    "healthCheck": "/health"
+  },
+  "setup": {
+    "onEnable": "cd frontend && [ -f dist/index.html ] || (npm ci --no-audit --no-fund && npm run build)",
+    "onEnableTimeout": 300
+  }
+}

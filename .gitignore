@@ -4,7 +4,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 node_modules/
-dist/
+frontend/dist/
+!ui/dist/
 .env
 .hypothesis/
 # local-only notes (never published: reference local paths / internal ecosystem)

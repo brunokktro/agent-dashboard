@@ -161,3 +161,15 @@ def test_diagnose_uses_configured_extra_hints(ecosystem):
     r = TestClient(app).get(f"/api/runs/{run_id}/diagnose")
     assert r.status_code == 200
     assert "Corporate SSO expired - re-authenticate" in r.json()["hints"]
+
+
+def test_health_endpoint(client):
+    """Liveness for supervisors (KiroCrew polls backend.healthCheck).
+    Reports the effective port so a shell wrapper can locate the UI."""
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert isinstance(body["port"], int)
+    # /api/apphost mirrors it under /api/ - app-shell proxies only forward /api/*
+    assert client.get("/api/apphost").json() == body
