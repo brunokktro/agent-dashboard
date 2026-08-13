@@ -30,7 +30,15 @@ class Datastore:
 
     # ── Agents registry ─────────────────────────────────────────────
     def load_agents(self) -> dict[str, dict[str, Any]]:
-        """Agents are .md files with YAML frontmatter containing a name field."""
+        """Agents come in two shapes, both first-class:
+
+        - ``.md`` spec with YAML frontmatter carrying a ``name`` field
+          (this ecosystem's convention);
+        - bare ``.json`` kiro-cli agent config with ``name`` + ``tools``
+          (kiro-cli's native format - some installs have ONLY these).
+
+        An ``.md`` + ``.json`` pair is ONE agent, described by the ``.md``.
+        """
         agents: dict[str, dict[str, Any]] = {}
         for md in sorted(self.s.agents_dir.glob("*.md")):
             try:
@@ -59,6 +67,22 @@ class Datastore:
                 "name": md.stem,
                 "description": desc,
                 "has_config": (self.s.agents_dir / f"{md.stem}.json").exists(),
+            }
+        # JSON-only agents: a .json is an agent config (not policy/state noise)
+        # when it parses AND carries both "name" and "tools" keys.
+        for cfg in sorted(self.s.agents_dir.glob("*.json")):
+            if cfg.stem in agents:
+                continue  # already described by its .md spec
+            try:
+                data = json.loads(cfg.read_text(errors="replace"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not isinstance(data, dict) or "name" not in data or "tools" not in data:
+                continue
+            agents[cfg.stem] = {
+                "name": cfg.stem,
+                "description": str(data.get("description", "")).strip(),
+                "has_config": True,
             }
         return agents
 

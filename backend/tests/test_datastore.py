@@ -124,3 +124,42 @@ def test_future_run_never_becomes_last(store):
         assert all(
             datetime.strptime(r["started_at"], "%Y-%m-%d %H:%M:%S") <= datetime.now()
             for r in stats["recent"] if r["started_at"])
+
+
+def test_json_only_agent_is_discovered(store, ecosystem):
+    """Regression (field report): kiro-cli native agents are bare .json configs.
+    A dashboard that only scans .md shows an empty Overview on such installs."""
+    import json as _json
+
+    (ecosystem.agents_dir / "gamma-agent.json").write_text(_json.dumps({
+        "name": "gamma-agent",
+        "description": "JSON-native kiro-cli agent",
+        "tools": ["read"],
+    }))
+    agents = store.load_agents()
+    assert "gamma-agent" in agents
+    assert agents["gamma-agent"]["description"] == "JSON-native kiro-cli agent"
+    assert agents["gamma-agent"]["has_config"] is True
+
+
+def test_non_agent_json_is_ignored(store, ecosystem):
+    """Random .json files in the agents dir (policies, state) are not agents."""
+    import json as _json
+
+    (ecosystem.agents_dir / "notify-policy.json").write_text(_json.dumps(
+        {"channels": ["reminder"], "mode": "failures-only"}))
+    (ecosystem.agents_dir / "broken.json").write_text("{not json")
+    agents = store.load_agents()
+    assert "notify-policy" not in agents
+    assert "broken" not in agents
+
+
+def test_md_spec_wins_over_its_json_config(store, ecosystem):
+    """An .md + .json pair is ONE agent, described by the .md spec."""
+    import json as _json
+
+    (ecosystem.agents_dir / "alpha-agent.json").write_text(_json.dumps({
+        "name": "alpha-agent", "description": "config description", "tools": []}))
+    agents = store.load_agents()
+    assert agents["alpha-agent"]["description"] == "First test agent"
+    assert agents["alpha-agent"]["has_config"] is True

@@ -140,6 +140,25 @@ Everything is environment-driven - no hardcoded paths.
 | `DASHBOARD_BIG_LOG_MB` | `50` | Large-log alert threshold |
 | `DASHBOARD_STUCK_AFTER_MINUTES` | `30` | Stuck queue item threshold |
 
+## Runner scripts - the two optional execution hooks
+
+The dashboard **observes** your ecosystem; it does not ship an agent runtime. The two "run" buttons delegate to scripts that live in YOUR ecosystem, at `$DASHBOARD_AGENTS_DIR/scripts/`:
+
+| Script | Called by | Contract |
+|--------|-----------|----------|
+| `run-agent.sh <agent-name> run --no-interactive` | the Run button on an agent | executes the agent once; stdout/stderr are captured to `logs/adhoc-<agent>-<stamp>.log` |
+| `run-scheduled.sh <job-id> <script> <timeout-sec>` | the Run button on a scheduled job | executes the job the same way the scheduler would (and should record the run into `runs.db`, e.g. via `bin/record-run`) |
+
+If a script is absent, the API answers `503` explaining exactly which file is missing - everything else (Overview, Health, Logs, Queue, diagnosis) works without them. A minimal `run-agent.sh` for kiro-cli users:
+
+```bash
+#!/usr/bin/env bash
+# $DASHBOARD_AGENTS_DIR/scripts/run-agent.sh
+exec kiro-cli chat --agent "$1" --no-interactive
+```
+
+Wrap it with `bin/record-run "$1" ...` if you also want the run to land in `runs.db`.
+
 ## Data contracts
 
 The dashboard reads, under `DASHBOARD_AGENTS_DIR`:

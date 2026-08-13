@@ -117,3 +117,16 @@ def test_queue_retry_when_filename_differs_from_id(client, ecosystem):
     assert r.status_code == 200
     assert not f.exists()
     assert (ecosystem.queue_dir / "pending" / "mnzx1h6c.json").exists()
+
+
+def test_trigger_without_runner_script_is_a_clear_error(client, ecosystem):
+    """Regression (field report): fresh clones have no run-agent.sh /
+    run-scheduled.sh (they belong to the observed ecosystem, not this repo).
+    Triggering must explain that, not crash with an opaque 500."""
+    r = client.post("/api/trigger-agent/alpha-agent")
+    assert r.status_code == 503
+    assert "run-agent.sh" in r.json()["detail"]
+
+    r = client.post("/api/trigger/alpha-agent-morning")
+    assert r.status_code == 503
+    assert "run-scheduled.sh" in r.json()["detail"]

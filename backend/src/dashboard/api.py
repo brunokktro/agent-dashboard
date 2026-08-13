@@ -213,6 +213,12 @@ def trigger_job(job_id: str, store: Store, settings: Annotated[Settings, Depends
     if not job:
         raise HTTPException(404, "job not found")
     runner = settings.scripts_dir / "run-scheduled.sh"
+    if not runner.is_file():
+        raise HTTPException(
+            503,
+            f"runner script not found: {runner}. Scheduled jobs are executed by "
+            "your ecosystem's run-scheduled.sh (this dashboard only observes); "
+            "see README 'Runner scripts' for the expected contract.")
     subprocess.Popen(
         [str(runner), job["id"], job["script"], str(job.get("timeout_sec", 1800))],
         start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -226,6 +232,12 @@ def trigger_agent(name: str, store: Store, settings: Annotated[Settings, Depends
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     log_path = settings.log_dir / f"adhoc-{name}-{stamp}.log"
     runner = settings.scripts_dir / "run-agent.sh"
+    if not runner.is_file():
+        raise HTTPException(
+            503,
+            f"runner script not found: {runner}. Ad-hoc runs are executed by "
+            "your ecosystem's run-agent.sh (this dashboard only observes); "
+            "see README 'Runner scripts' for the expected contract.")
     with log_path.open("w") as lf:
         subprocess.Popen([str(runner), name, "run", "--no-interactive"],
                          start_new_session=True, stdout=lf, stderr=lf)
