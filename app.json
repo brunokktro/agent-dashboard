@@ -15,6 +15,17 @@
     "Read-mostly by design: the only writes are queue transitions, alert acks and backlog decisions"
   ],
   "defaultEnabled": false,
+  "icon": "LayoutDashboard",
+  "iconPath": "assets/icon.png",
+  "heroImage": "assets/hero.png",
+  "heroImageDetail": "assets/hero-detail.png",
+  "screenshots": [
+    "docs/img/overview.png",
+    "docs/img/health.png",
+    "docs/img/logs.png",
+    "docs/img/console.png",
+    "docs/img/pipe.png"
+  ],
   "permissions": {
     "api": ["/apps/agent-dashboard/api"]
   },

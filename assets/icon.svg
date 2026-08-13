@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0B0D12"/>
+  <!-- run heatmap: three columns of cells, the middle one failing -->
+  <g>
+    <rect x="112" y="300" width="52" height="52" rx="12" fill="#10B981"/>
+    <rect x="112" y="234" width="52" height="52" rx="12" fill="#10B981" opacity=".55"/>
+    <rect x="230" y="300" width="52" height="52" rx="12" fill="#EF4444"/>
+    <rect x="230" y="234" width="52" height="52" rx="12" fill="#10B981" opacity=".35"/>
+    <rect x="348" y="300" width="52" height="52" rx="12" fill="#10B981"/>
+    <rect x="348" y="234" width="52" height="52" rx="12" fill="#10B981" opacity=".55"/>
+  </g>
+  <!-- pulse line across the top: the live signal -->
+  <path d="M96 168 h74 l26 -52 l30 96 l28 -70 l24 26 h138"
+        fill="none" stroke="#60A5FA" stroke-width="18"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- baseline -->
+  <rect x="96" y="388" width="320" height="16" rx="8" fill="#1F2937"/>
+</svg>
