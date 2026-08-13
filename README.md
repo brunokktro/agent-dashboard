@@ -139,6 +139,7 @@ Everything is environment-driven - no hardcoded paths.
 | `DASHBOARD_SUPERVISOR_SERVICE` | _(empty)_ | launchd/systemd service name for supervisor status |
 | `DASHBOARD_BIG_LOG_MB` | `50` | Large-log alert threshold |
 | `DASHBOARD_STUCK_AFTER_MINUTES` | `30` | Stuck queue item threshold |
+| `DASHBOARD_EXCLUDE_AGENTS` | `[]` | Glob patterns of agent names to hide from every view, JSON list (e.g. `'["vendor-*","*-heartbeat"]'`) - useful for vendor-installed agents you do not operate |
 
 ## Runner scripts - the two optional execution hooks
 

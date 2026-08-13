@@ -163,3 +163,21 @@ def test_md_spec_wins_over_its_json_config(store, ecosystem):
     agents = store.load_agents()
     assert agents["alpha-agent"]["description"] == "First test agent"
     assert agents["alpha-agent"]["has_config"] is True
+
+
+def test_exclude_agents_filters_by_glob(ecosystem):
+    """DASHBOARD_EXCLUDE_AGENTS hides agents by glob pattern - lets an install
+    keep vendor/json-native agents out of view without touching files."""
+    import json as _json
+
+    from dashboard.config import Settings
+    from dashboard.datastore import Datastore
+
+    (ecosystem.agents_dir / "vendor-tool-x.json").write_text(_json.dumps({
+        "name": "vendor-tool-x", "description": "vendor agent", "tools": []}))
+    s = Settings(agents_dir=ecosystem.agents_dir,
+                 exclude_agents=["vendor-*", "beta-agent"])
+    agents = Datastore(s).load_agents()
+    assert "vendor-tool-x" not in agents
+    assert "beta-agent" not in agents
+    assert "alpha-agent" in agents

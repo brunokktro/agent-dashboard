@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 from datetime import datetime, timedelta
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,9 @@ class Datastore:
                 "description": str(data.get("description", "")).strip(),
                 "has_config": True,
             }
+        if self.s.exclude_agents:
+            agents = {n: a for n, a in agents.items()
+                      if not any(fnmatch(n, pat) for pat in self.s.exclude_agents)}
         return agents
 
     def resolve_agent(self, job_id: str) -> str:

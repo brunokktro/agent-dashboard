@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Agent name -> human description of its dependencies (shown on detail page).
     agent_deps: dict[str, str] = {}
 
+    # Glob patterns of agent names to HIDE from every view (e.g. vendor-installed
+    # agents you do not operate). Env format is JSON: '["vendor-*","kiroom-*"]'.
+    exclude_agents: list[str] = []
+
     # Alert thresholds
     big_log_mb: int = 50
     stuck_after_minutes: int = 30
