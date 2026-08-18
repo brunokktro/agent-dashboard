@@ -826,6 +826,60 @@ def backlog_reorder(body: ReorderBody,
     return {"ok": True, "updated": updated}
 
 
+class CreateItemBody(BaseModel):
+    """A human proposing work. `autonomy` is not a parameter on purpose: a
+    proposal enters the board as `review`, and only a human clicking Approve
+    turns it into `auto`. Letting the creator choose would remove the review
+    step for exactly the items that most need one."""
+
+    title: str
+    body: str = ""
+    priority: str = "medium"
+    agent: str = ""
+
+
+@router.post("/api/backlog/create")
+def backlog_create(payload: dict = Body(...),  # noqa: B008 - explicit reject below
+                   settings: Annotated[Settings, Depends(get_settings)] = None):
+    """Create a backlog item from the board - the human side of the loop.
+
+    The board already lets you decide on work an agent proposed; this is how you
+    propose your own, without leaving the UI to write a file by hand.
+    """
+    import re as _re
+    if "autonomy" in payload:
+        raise HTTPException(
+            422, "autonomy is not settable on create: a proposal starts as "
+                 "'review' and becomes 'auto' only when a human approves it")
+    data = CreateItemBody(**{k: v for k, v in payload.items()
+                             if k in CreateItemBody.model_fields})
+    title = data.title.strip()
+    if not title:
+        raise HTTPException(422, "title is required")
+    priority = data.priority.strip().lower() or "medium"
+    if priority not in ("high", "medium", "low"):
+        raise HTTPException(422, "invalid priority (use high/medium/low)")
+
+    # slug: the title is free text, so keep only what is safe as a filename and
+    # let _safe_md() be the final gate - the same one every other endpoint uses
+    slug = _re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60] or "item"
+    base = settings.agents_dir / "backlog"
+    base.mkdir(parents=True, exist_ok=True)
+    name, n = f"{slug}.md", 2
+    while (base / name).exists():          # never overwrite someone's item
+        name, n = f"{slug}-{n}.md", n + 1
+    path = base / _safe_md(name)
+
+    fm = ["autonomy: review", f"priority: {priority}",
+          f"created: {datetime.now().strftime('%Y-%m-%d')}"]
+    if data.agent.strip():
+        fm.insert(1, f"agent: {data.agent.strip()}")
+    body = data.body.strip()
+    path.write_text("---\n" + "\n".join(fm) + f"\n---\n\n# {title}\n"
+                    + (f"\n{body}\n" if body else ""))
+    return {"ok": True, "file": path.name, "autonomy": "review"}
+
+
 @router.get("/api/backlog/item")
 def backlog_item(bucket: str, file: str,
                  settings: Annotated[Settings, Depends(get_settings)]):

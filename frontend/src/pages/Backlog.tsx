@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm"
 import { toast } from "sonner"
 import {
   Check, CheckCircle2, ChevronDown, ChevronUp, ClipboardList, Copy, Loader,
-  MessageSquareText, Search, Trash2, TriangleAlert, X,
+  MessageSquareText, Plus, Search, Trash2, TriangleAlert, X,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -326,6 +326,95 @@ function ItemReader({ item, bucket, siblings, onNavigate, onClose }: {
   )
 }
 
+/** Propose work from the board. The counterpart of deciding on what an agent
+ *  proposed: a human can put an item on the board without leaving the UI to
+ *  write a file by hand. It always lands as `review` - the API refuses to let
+ *  the creator pick `auto`, which is what keeps the review step meaningful. */
+function NewItem({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [title, setTitle] = useState("")
+  const [body, setBody] = useState("")
+  const [priority, setPriority] = useState("medium")
+  const [agent, setAgent] = useState("")
+  const [busy, setBusy] = useState(false)
+
+  const reset = () => { setTitle(""); setBody(""); setPriority("medium"); setAgent("") }
+
+  const submit = async () => {
+    if (!title.trim()) return
+    setBusy(true)
+    try {
+      const r = await fetch("/api/backlog/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, body, priority, agent }),
+      })
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}))
+        toast.error(d.detail ?? `HTTP ${r.status}`)
+        return
+      }
+      const d = await r.json()
+      toast.success(`Added ${d.file} - waiting for review`)
+      reset()
+      setOpen(false)
+      onCreated()
+    } catch (e) {
+      toast.error(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs"
+        onClick={() => setOpen(true)}>
+        <Plus className="size-3.5" /> Propose item
+      </Button>
+      {open && (
+        <Dialog open onOpenChange={(o) => !o && setOpen(false)}>
+          <DialogContent className="max-w-lg sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Propose a backlog item</DialogTitle>
+              <DialogDescription>
+                It enters as <span className="font-medium">review</span> - an agent can
+                analyse it, and it only becomes <span className="font-medium">auto</span> when
+                you approve.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <Input autoFocus placeholder="What needs doing (becomes the title)"
+                value={title} onChange={(e) => setTitle(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && submit()} />
+              <Textarea rows={5} placeholder="Context: what is broken, what you expect, anything you already know…"
+                value={body} onChange={(e) => setBody(e.target.value)}
+                className="resize-none text-sm" />
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">priority</span>
+                {["high", "medium", "low"].map((p) => (
+                  <button key={p} onClick={() => setPriority(p)}
+                    className={`rounded-full border px-2.5 py-0.5 text-xs capitalize transition-colors ${
+                      priority === p ? "border-foreground font-medium" : "hover:bg-muted"
+                    }`}>{p}</button>
+                ))}
+                <Input className="ml-auto h-7 w-40 text-xs" placeholder="agent (optional)"
+                  value={agent} onChange={(e) => setAgent(e.target.value)} />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button size="sm" disabled={!title.trim() || busy} onClick={submit}>
+                {busy ? "Adding…" : "Add to backlog"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
+  )
+}
+
 export default function BacklogPage() {
   const qc = useQueryClient()
   const { data } = useQuery({
@@ -406,6 +495,9 @@ export default function BacklogPage() {
             onChange={(e) => setSearch(e.target.value)} className="pl-8" />
         </div>
         {["autonomous", "review", "blocked"].map(chip)}
+        <div className="ml-auto">
+          <NewItem onCreated={() => qc.invalidateQueries({ queryKey: ["backlog"] })} />
+        </div>
       </div>
 
       <div className="grid min-h-0 flex-1 gap-4" style={{ gridTemplateColumns: `repeat(${cols.length}, minmax(0, 1fr))` }}>

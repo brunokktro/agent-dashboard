@@ -99,3 +99,59 @@ def test_running_and_failed_items_keep_their_review_note_flow(client, board):
     assert r.status_code == 200
     note = (board / "review-notes" / "broken.md").read_text()
     assert "status: discussing" in note and "longer timeout" in note
+
+
+# ── Human proposals: creating an item from the board ────────────────
+
+
+def test_create_item_writes_a_reviewable_file(client, board):
+    r = client.post("/api/backlog/create", json={
+        "title": "Reclaim stale locks after SIGKILL",
+        "body": "Locks survive a hard kill and the job never runs again.",
+        "priority": "high", "agent": "meta-agent",
+    })
+    assert r.status_code == 200
+    file = r.json()["file"]
+    assert file == "reclaim-stale-locks-after-sigkill.md"
+    text = (board / file).read_text()
+    # lands in review, never auto: a human proposal is a proposal
+    assert "autonomy: review" in text
+    assert "priority: high" in text and "agent: meta-agent" in text
+    assert "created: " in text
+    assert "# Reclaim stale locks after SIGKILL" in text
+    assert "Locks survive a hard kill" in text
+    # and it shows up on the board immediately
+    files = [i["file"] for i in client.get("/api/backlog").json()["active"]]
+    assert file in files
+
+
+def test_create_item_requires_a_title(client, board):
+    assert client.post("/api/backlog/create", json={"title": "   "}).status_code == 422
+
+
+def test_create_item_never_overwrites_an_existing_one(client, board):
+    first = client.post("/api/backlog/create", json={"title": "Same name"}).json()["file"]
+    body_before = (board / first).read_text()
+    second = client.post("/api/backlog/create", json={"title": "Same name!"}).json()["file"]
+    assert second != first, "a colliding title must not reuse the file"
+    assert (board / first).read_text() == body_before, "the first item is untouched"
+
+
+def test_create_item_slug_is_safe(client, board):
+    """A title is free text: it must never escape the backlog directory or
+    produce a name the other endpoints would reject."""
+    r = client.post("/api/backlog/create", json={"title": "../../etc/passwd & rm -rf"})
+    assert r.status_code == 200
+    file = r.json()["file"]
+    assert "/" not in file and ".." not in file
+    assert (board / file).is_file()
+    # the safety check the other endpoints use accepts it
+    assert client.post("/api/backlog/state",
+                       json={"file": file, "state": "running"}).status_code == 200
+
+
+def test_create_item_rejects_invalid_priority_and_autonomy(client, board):
+    assert client.post("/api/backlog/create",
+                       json={"title": "x", "priority": "urgentissimo"}).status_code == 422
+    assert client.post("/api/backlog/create",
+                       json={"title": "x", "autonomy": "auto"}).status_code == 422
