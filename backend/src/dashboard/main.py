@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -44,6 +44,24 @@ def create_app() -> FastAPI:
     app.include_router(obs_router)
     app.include_router(events_router)
     app.include_router(pipe_router)
+
+    # A page this dashboard no longer serves forwards to its new home. This is
+    # middleware, not a route, for a concrete reason: the SPA fallback is already
+    # a catch-all (`/{full_path:path}`), so a second catch-all would either
+    # shadow it (404-ing the whole UI) or have to duplicate it. Middleware runs
+    # before routing and only acts on a configured path, leaving everything else
+    # untouched. Temporary (307) on purpose: a permanent redirect is cached hard
+    # by browsers and painful to undo if the destination moves again.
+    @app.middleware("http")
+    async def forward_moved_pages(request, call_next):
+        redirects = get_settings().redirects
+        if redirects:
+            path = "/" + request.url.path.strip("/")
+            dest = redirects.get(path)
+            # never let a map entry shadow the API or the built assets
+            if dest and not path.startswith(("/api/", "/assets/")):
+                return RedirectResponse(dest, status_code=307)
+        return await call_next(request)
 
     if FRONTEND_DIST.exists():
         app.mount("/assets", _HashedAssets(directory=FRONTEND_DIST / "assets"),

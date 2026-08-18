@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # out of the code. Env format: '[["corp-sso","SSO expired - reauth"]]'.
     extra_hints: list[list[str]] = []
 
+    # Paths this dashboard no longer serves, mapped to where they now live:
+    # {"/old-page": "http://localhost:7781/old-page"}. A page that moved must
+    # forward instead of becoming a not-found - a bookmark should never dead-end.
+    # Site-specific destinations stay in config, out of the code.
+    redirects: dict[str, str] = {}
+
     # Alert thresholds
     big_log_mb: int = 50
     stuck_after_minutes: int = 30
@@ -88,7 +94,7 @@ def get_settings() -> Settings:
 # paths and service wiring stay env/manifest-owned).
 _HOST_CONFIG_KEYS = ("exclude_agents", "include_agents", "extra_hints",
                      "big_log_mb", "stuck_after_minutes", "job_agent_overrides",
-                     "agent_deps", "upstream_repo")
+                     "agent_deps", "upstream_repo", "redirects")
 
 
 def build_settings() -> Settings:

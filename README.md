@@ -175,6 +175,7 @@ Everything is environment-driven - no hardcoded paths.
 | `DASHBOARD_INCLUDE_AGENTS` | `[]` | Allowlist: when set, ONLY agents matching these globs are shown. Exclusions still win |
 | `DASHBOARD_UPSTREAM_REPO` | `brunokktro/agent-dashboard` | `owner/name` checked by the header's update button; empty disables the check |
 | `DASHBOARD_EXTRA_HINTS` | `[]` | Site-specific failure hints for the run diagnosis, JSON list of `[regex, hint]` pairs matched against the failing run's log (e.g. `'[["corp-sso","SSO expired - re-authenticate"]]'`) - keeps internal tool names out of the code |
+| `DASHBOARD_REDIRECTS` | `{}` | Paths this dashboard no longer serves, mapped to where they now live: `{"/old-page": "http://localhost:7781/old-page"}`. Answers 307 so a bookmark never dead-ends. |
 
 Running under an app host (e.g. as a KiroCrew app) the backend gets a minimal environment, so `DASHBOARD_*` vars cannot reach it. There, the host's per-app settings file is the configuration channel: `$KIROCREW_HOME/apps/agent-dashboard/data/config.json` (editable via the host's `PUT /api/apps/agent-dashboard/config`), accepting `exclude_agents`, `extra_hints`, `big_log_mb`, `stuck_after_minutes`, `job_agent_overrides` and `agent_deps` with the same shapes as the env vars. Recognized keys override the environment; the file is optional.
 
