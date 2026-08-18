@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
-import { BrowserRouter, NavLink, Route, Routes, useLocation } from "react-router-dom"
+import { BrowserRouter, Link, NavLink, Route, Routes, useLocation } from "react-router-dom"
 import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { Activity, Bot, HeartPulse, ListTodo, CircleHelp, Moon, ScrollText, Settings2, SquareTerminal, Sun } from "lucide-react"
@@ -18,6 +18,30 @@ import LogsPage from "@/pages/Logs"
 import ConsolePage from "@/pages/Console"
 import HelpPage from "@/pages/Help"
 import { UpdateCheck } from "@/components/UpdateCheck"
+
+/** Any unknown path. Without this an unmatched route renders a blank page - the
+ *  worst possible answer, because it is indistinguishable from a crash. Names
+ *  the path so a stale bookmark or a typo is obvious. */
+function NotFound() {
+  const { pathname } = useLocation()
+  return (
+    <div className="mx-auto max-w-lg space-y-3 py-16 text-center">
+      <h1 className="text-lg font-semibold">Nothing at this address</h1>
+      <p className="text-sm text-muted-foreground">
+        The dashboard has no page at{" "}
+        <code className="rounded bg-muted px-1.5 py-0.5">{pathname}</code>.
+      </p>
+      <p className="text-sm text-muted-foreground">
+        If you followed a bookmark, the page may have moved - the tabs above are the
+        full set. The <Link className="text-blue-500 hover:underline" to="/help">Help tab</Link>{" "}
+        documents every one of them.
+      </p>
+      <Link to="/" className="inline-block text-sm text-blue-500 hover:underline">
+        Back to the Overview
+      </Link>
+    </div>
+  )
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -174,6 +198,7 @@ export default function App() {
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/console" element={<ConsolePage />} />
             <Route path="/help" element={<HelpPage />} />
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </Shell>
         <Toaster position="bottom-right" />
