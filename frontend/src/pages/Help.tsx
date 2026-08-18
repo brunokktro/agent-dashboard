@@ -82,8 +82,8 @@ const SECTIONS: Section[] = [
             <><K>bin/install-starters --all</K> installs a small routine that does real work:
             <K>heartbeat</K> (every 15 min - checks the server serves the app and the API reads
             your ecosystem, and gives these charts data immediately), <K>log-hygiene</K> (weekly -
-            compresses logs past the threshold, never deletes), plus the <K>failure-triage</K> and
-            <K>dashboard-support</K> agents.</>,
+            compresses logs past the threshold, never deletes), plus the <K>failure-triage</K>,
+            <K>backlog-reviewer</K> and <K>dashboard-support</K> agents.</>,
             "The two scheduled ones are plain shell scripts - no LLM, no kiro-cli. The agents need kiro-cli.",
             "Schedule entries are merged: a job id you already have is never rewritten, and existing files are kept (--force backs yours up first).",
             "They double as templates. Anything tied to a system only you can reach belongs in your own ecosystem, not in a public repo.",
@@ -341,11 +341,50 @@ const SECTIONS: Section[] = [
         ),
       },
       {
+        id: "when-stuck", title: "When something looks broken",
+        body: (
+          <UL items={[
+            <><K>bin/collect-diagnostics</K> prints the whole picture in one paste-able block -
+            platform, runtime versions, whether the build exists, which ecosystem is being read,
+            the port, whether the server answers. It contains no secrets (environment variables
+            come out as SET/UNSET), so it is safe to hand to anyone helping you.</>,
+            <><K>bin/sweep</K> drives this running server the way a browser does and asserts
+            every endpoint, every page route and the Help images. It catches what a unit test
+            cannot - a route that shadows a page, a payload the UI does not expect.</>,
+            <>Liveness is <K>/healthz</K> (it also reports the port actually bound). Not
+            <K>/health</K> - that path belongs to the Health page, and an API route there used
+            to answer JSON to anyone who reloaded it.</>,
+            <>An empty dashboard on a fresh install is correct, not broken: it observes
+            artifacts it does not create. <K>bin/install-starters --all</K> gives it a routine.</>,
+            "Failed runs: open the failing run and read the diagnosis - it isolates that run's own log window, translates the exit code and matches known failure patterns.",
+          ]} />
+        ),
+      },
+      {
         id: "shortcuts", title: "Shortcuts",
         body: (
           <UL items={[
             <><K>Cmd+K</K> / <K>Ctrl+K</K>: command palette - jump to any page or agent.</>,
             "Moon/Sun icon: dark mode (remembered between visits).",
+          ]} />
+        ),
+      },
+      {
+        id: "statuses", title: "What a run's status means",
+        body: (
+          <UL items={[
+            <><K>success</K> / <K>failed</K> - the exit code was zero, or it was not.</>,
+            <><K>degraded</K> - the run exited abnormally BUT delivered its work, proven
+            deterministically (it wrote a <K>run-outcomes/&lt;job&gt;.json</K> during the run,
+            pointing at an evidence file also touched during the run). Never inferred from an
+            agent's own opinion of itself. Use it for a partial result - one source of five
+            failed and will be retried - so self-healing stops being counted as breakage.</>,
+            <><K>skipped</K> - a pre-flight condition was not met (expired credentials, a
+            dependency down), so the job chose not to run. Distinct from failing, and it must
+            not drag the health score down.</>,
+            <><K>timeout</K> - killed at <K>timeout_sec</K> (exit 124). <K>cancelled</K> - a
+            human stopped it.</>,
+            "A status the ledger cannot verify is never granted: the fallback is always the harsher one, because a run that lies about itself is worse than a run that failed.",
           ]} />
         ),
       },
