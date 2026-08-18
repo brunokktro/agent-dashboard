@@ -11,6 +11,8 @@ export function StatusBadge({ status }: { status: string }) {
     done: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
     cancelled: "bg-muted text-muted-foreground",
     timeout: "bg-orange-500/15 text-orange-600 dark:text-orange-400",
+    degraded: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+    skipped: "bg-muted text-muted-foreground",
   }
   return (
     <Badge variant="secondary" className={`${map[status] ?? ""} border-0 font-medium`}>

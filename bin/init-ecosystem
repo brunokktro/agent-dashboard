@@ -91,7 +91,14 @@ DASHBOARD_DIR="${DASHBOARD_DIR:-$HOME/agent-dashboard}"
 # kiro-cli resolves --agent by the config's INTERNAL name, which the
 # dashboard hands over as AGENT_CLI_NAME when the two differ.
 RECORDER="$DASHBOARD_DIR/bin/record-run"
-RUN=(kiro-cli chat --agent "${AGENT_CLI_NAME:-$AGENT}" --no-interactive "$@")
+
+# The RUN line already forces --no-interactive, and the dashboard's Run
+# button ALSO passes it (contract: run-agent.sh <name> run --no-interactive).
+# kiro-cli rejects the flag twice, so drop it from the forwarded args.
+ARGS=()
+for a in "$@"; do [ "$a" = "--no-interactive" ] || ARGS+=("$a"); done
+# ${ARGS[@]+...} keeps bash 3.2 + set -u happy when ARGS is empty
+RUN=(kiro-cli chat --agent "${AGENT_CLI_NAME:-$AGENT}" --no-interactive ${ARGS[@]+"${ARGS[@]}"})
 
 if [ -x "$RECORDER" ]; then
   AGENTS_DIR="$AGENTS_DIR" exec "$RECORDER" "$AGENT" "${RUN[@]}"
