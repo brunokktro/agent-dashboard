@@ -27,7 +27,14 @@ while IFS= read -r f; do
   # and archive the whole thing first: compress, verify, only then truncate.
   gzip -c "$f" > "$archive" || { echo "log-hygiene: failed to archive $f" >&2; continue; }
   gzip -t "$archive" || { echo "log-hygiene: archive of $f is corrupt, keeping original" >&2; rm -f "$archive"; continue; }
-  tail -n "$KEEP_TAIL_LINES" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  # Truncate IN PLACE, same inode - never `mv` a new file over it. A long-running
+  # process (a service writing its stdout here) holds an open descriptor: replace
+  # the file and it keeps writing to the orphaned inode, so every later line is
+  # invisible on disk and the space is not freed until it restarts. Measured with
+  # a writer holding the file open: 34 of 40 lines vanished. `>` truncates the
+  # existing inode, so the writer follows along.
+  tail_keep="$(tail -n "$KEEP_TAIL_LINES" "$f")"
+  printf '%s\n' "$tail_keep" > "$f"
   echo "log-hygiene: rotated $(basename "$f") (${size_mb}MB) -> $(basename "$archive"), kept last $KEEP_TAIL_LINES lines"
   rotated=$(( rotated + 1 ))
 done < <(find "$LOG_DIR" -maxdepth 1 -type f -name "*.log" 2>/dev/null)
