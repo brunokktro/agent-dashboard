@@ -7,6 +7,7 @@ import {
   Check, CheckCircle2, ChevronDown, ChevronUp, ClipboardList, Copy, Loader,
   MessageSquareText, Plus, Search, Trash2, TriangleAlert, X,
 } from "lucide-react"
+import { api } from "@/lib/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -14,6 +15,9 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 
@@ -330,7 +334,7 @@ function ItemReader({ item, bucket, siblings, onNavigate, onClose }: {
  *  proposed: a human can put an item on the board without leaving the UI to
  *  write a file by hand. It always lands as `review` - the API refuses to let
  *  the creator pick `auto`, which is what keeps the review step meaningful. */
-function NewItem({ onCreated }: { onCreated: () => void }) {
+function NewItem({ agents, onCreated }: { agents: string[]; onCreated: () => void }) {
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState("")
   const [body, setBody] = useState("")
@@ -398,8 +402,32 @@ function NewItem({ onCreated }: { onCreated: () => void }) {
                       priority === p ? "border-foreground font-medium" : "hover:bg-muted"
                     }`}>{p}</button>
                 ))}
-                <Input className="ml-auto h-7 w-40 text-xs" placeholder="agent (optional)"
-                  value={agent} onChange={(e) => setAgent(e.target.value)} />
+                <div className="ml-auto w-48">
+                  {/* Same list the Enqueue dialog uses (the observed agents), with
+                      two deliberate differences: "nobody yet" is a first-class
+                      choice, because a human proposal often precedes deciding who
+                      owns it; and on a fresh install with no agents discovered the
+                      Select would be an empty trap, so it degrades to a plain
+                      field instead of offering nothing. */}
+                  {agents.length > 0 ? (
+                    <Select value={agent || "__none__"}
+                      onValueChange={(v) => setAgent(v === "__none__" ? "" : v)}>
+                      <SelectTrigger className="h-7 text-xs">
+                        <SelectValue placeholder="owner (optional)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">no owner yet</SelectItem>
+                        {agents.map((n) => (
+                          <SelectItem key={n} value={n}>{n}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input className="h-7 text-xs" placeholder="agent (none discovered)"
+                      value={agent} onChange={(e) => setAgent(e.target.value)}
+                      title="No agents were discovered in this ecosystem yet - type a name if you already know who will own it" />
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex justify-end gap-2">
@@ -421,6 +449,9 @@ export default function BacklogPage() {
     queryKey: ["backlog"],
     queryFn: () => fetch("/api/backlog").then((r) => r.json()),
   })
+  // shares the ["overview"] cache with the rest of the app - no extra request
+  const { data: overview } = useQuery({ queryKey: ["overview"], queryFn: api.overview })
+  const agentNames = (overview?.agents ?? []).map((a) => a.name)
   const [search, setSearch] = useState("")
   const [facet, setFacet] = useState<string>("")
   const [open, setOpen] = useState<{ item: Item; bucket: string } | null>(null)
@@ -496,7 +527,7 @@ export default function BacklogPage() {
         </div>
         {["autonomous", "review", "blocked"].map(chip)}
         <div className="ml-auto">
-          <NewItem onCreated={() => qc.invalidateQueries({ queryKey: ["backlog"] })} />
+          <NewItem agents={agentNames} onCreated={() => qc.invalidateQueries({ queryKey: ["backlog"] })} />
         </div>
       </div>
 

@@ -233,6 +233,7 @@ const SECTIONS: Section[] = [
             "Running and Failed columns appear when an item carries state: running or state: failed in its frontmatter - written by whoever executes it, through POST /api/backlog/state. The item never moves on disk, so its note, order and history stay attached.",
             "The full loop: backlog-reviewer writes the note, you decide here (Approve flips the item to auto), an executor picks it up and marks it running, then done or failed. The agent proposes, the human approves - always in that order.",
             "'Propose item' puts YOUR work on the board without leaving the UI. It always enters as review - the API refuses to let the creator pick auto, so the review step stays real even for your own items.",
+            "The owner field lists the agents this dashboard discovered (the same list the Enqueue dialog uses), with 'no owner yet' as a first-class choice - a proposal often precedes deciding who runs it. On a fresh install with no agents discovered it becomes a plain field, so it is never an empty dropdown.",
           ]} />
         ),
       },
