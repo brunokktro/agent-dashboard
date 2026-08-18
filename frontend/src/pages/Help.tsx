@@ -230,6 +230,8 @@ const SECTIONS: Section[] = [
             "Review notes carry a decision bar: Approve flips the item's autonomy to auto (applied on the agent's next run), Discuss saves your feedback into the note for regeneration, Reject stops it.",
             "Backlog items expose the autonomy switch (auto / review / blocked) and a soft Delete - items move to backlog/deleted/, nothing is destroyed.",
             "Drag and drop cards in the 'Active backlog' column to reorder them - the order persists in each file's frontmatter and survives a refresh.",
+            "Running and Failed columns appear when an item carries state: running or state: failed in its frontmatter - written by whoever executes it, through POST /api/backlog/state. The item never moves on disk, so its note, order and history stay attached.",
+            "The full loop: backlog-reviewer writes the note, you decide here (Approve flips the item to auto), an executor picks it up and marks it running, then done or failed. The agent proposes, the human approves - always in that order.",
           ]} />
         ),
       },

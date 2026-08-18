@@ -527,10 +527,16 @@ def diagnose_run(run_id: int, store: Store, settings: Annotated[Settings, Depend
 
 @router.get("/api/backlog")
 def api_backlog(settings: Annotated[Settings, Depends(get_settings)]):
-    """Backlog kanban: reads backlog/*.md frontmatter (v2 parity)."""
+    """Backlog kanban: reads backlog/*.md frontmatter (v2 parity).
+
+    Execution state comes from the item's own ``state:`` field - written by
+    whoever executes it - so an item never moves on disk: its review note,
+    its order and a soft delete all keep pointing at the same path. An
+    unrecognised value keeps the item on the board rather than hiding it.
+    """
     import re as _re
     base = settings.agents_dir / "backlog"
-    out = {"active": [], "done": [], "review_notes": []}
+    out = {"active": [], "running": [], "failed": [], "done": [], "review_notes": []}
     for bucket, d in (("active", base), ("done", base / "done"),
                       ("review_notes", base / "review-notes")):
         if not d.exists():
@@ -545,7 +551,7 @@ def api_backlog(settings: Annotated[Settings, Depends(get_settings)]):
                         k, v = ln.split(":", 1)
                         meta[k.strip()] = v.strip()
             title_m = _re.search(r"^#\s+(.+)$", text, _re.MULTILINE)
-            out[bucket].append({
+            item = {
                 "file": f.name,
                 "title": title_m.group(1) if title_m else f.stem,
                 "autonomy": meta.get("autonomy", ""),
@@ -553,7 +559,13 @@ def api_backlog(settings: Annotated[Settings, Depends(get_settings)]):
                 "priority": meta.get("priority", ""),
                 "created": meta.get("created", ""),
                 "order": meta.get("order", ""),
-            })
+                "state": meta.get("state", ""),
+            }
+            # only items still on the board carry an execution state
+            target = bucket
+            if bucket == "active" and item["state"] in ("running", "failed"):
+                target = item["state"]
+            out[target].append(item)
 
     def _order_key(item: dict) -> tuple:
         try:
@@ -563,6 +575,41 @@ def api_backlog(settings: Annotated[Settings, Depends(get_settings)]):
 
     out["active"].sort(key=_order_key)
     return out
+
+
+BACKLOG_STATES = ("active", "running", "failed")
+
+
+class StateBody(BaseModel):
+    """Standalone rather than inheriting BacklogFileBody: the shared body models
+    are declared further down the module, and an endpoint must not depend on
+    where its neighbours happen to sit."""
+
+    file: str
+    state: str
+
+
+@router.post("/api/backlog/state")
+def backlog_state(body: StateBody,
+                  settings: Annotated[Settings, Depends(get_settings)]):
+    """Move a backlog item between board / running / failed.
+
+    ``active`` CLEARS the field instead of writing ``state: active``: a value
+    that means "no value" is a second way to say the same thing, and the two
+    drift. Whoever executes an item is expected to call this - the dashboard
+    only reflects it.
+    """
+    value = body.state.strip().lower()
+    if value not in BACKLOG_STATES:
+        raise HTTPException(422, f"invalid state (use {'/'.join(BACKLOG_STATES)})")
+    path = settings.agents_dir / "backlog" / _safe_md(body.file)
+    if not path.is_file():
+        raise HTTPException(404, "backlog item not found")
+    if value == "active":
+        _clear_frontmatter_field(path, "state")
+    else:
+        _set_frontmatter_field(path, "state", value)
+    return {"ok": True, "state": value}
 
 
 @router.post("/api/supervisor/job/{job_id}/toggle")
@@ -630,10 +677,15 @@ def _safe_md(file: str) -> str:
 
 
 def _set_frontmatter_field(path, field: str, value: str) -> None:
-    """Set (replace or append) one frontmatter field, creating the block if absent."""
+    """Set (replace or append) one frontmatter field, creating the block if absent.
+
+    The closing delimiter is matched WITHOUT swallowing what follows it: a
+    greedy ``\\s*`` there eats the blank line before the body, so every edit
+    silently reformatted a file the user owns.
+    """
     import re as _re
     text = path.read_text(errors="replace")
-    fm = _re.match(r"^---\s*\n(.*?)\n---\s*\n", text, _re.DOTALL)
+    fm = _re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", text, _re.DOTALL)
     if fm:
         body = fm.group(1)
         if _re.search(rf"^{field}:\s*.*$", body, _re.MULTILINE):
@@ -645,6 +697,17 @@ def _set_frontmatter_field(path, field: str, value: str) -> None:
     else:
         text = f"---\n{field}: {value}\n---\n\n" + text
     path.write_text(text)
+
+
+def _clear_frontmatter_field(path, field: str) -> None:
+    """Remove one frontmatter field, leaving everything else byte-identical."""
+    import re as _re
+    text = path.read_text(errors="replace")
+    fm = _re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", text, _re.DOTALL)
+    if not fm:
+        return
+    body = _re.sub(rf"^{field}:\s*.*$\n?", "", fm.group(1), flags=_re.MULTILINE)
+    path.write_text(text.replace(fm.group(0), f"---\n{body.rstrip()}\n---\n", 1))
 
 
 def _set_note_feedback(path, label: str, message: str) -> None:

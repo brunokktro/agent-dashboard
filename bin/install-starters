@@ -12,6 +12,8 @@
 #                                (never deletes) - acts on the large-log alert
 #   failure-triage  agent         diagnoses the last 24h of failed runs through
 #                                the dashboard's own /diagnose endpoint
+#   backlog-reviewer agent        turns one backlog item into a review note with
+#                                plan, blast radius and validation - never approves
 #   dashboard-support agent       guided install + troubleshooting (see agents/)
 #
 #   bin/install-starters                 # show what would be installed
@@ -59,7 +61,7 @@ if [ "$DO_SCRIPTS" -eq 0 ] && [ "$DO_AGENTS" -eq 0 ]; then
   say ""
   say "Would install (nothing written yet):"
   say "  scripts: heartbeat.sh (every 15 min), log-hygiene.sh (weekly)"
-  say "  agents:  failure-triage, dashboard-support"
+  say "  agents:  failure-triage, backlog-reviewer, dashboard-support"
   say ""
   say "Re-run with --scripts, --agents or --all."
   exit 0
@@ -114,7 +116,7 @@ fi
 if [ "$DO_AGENTS" -eq 1 ]; then
   say ""
   say "Agent starters:"
-  for a in failure-triage; do
+  for a in failure-triage backlog-reviewer; do
     for ext in md json; do
       place "$SRC/agents/$a.$ext" "$AGENTS_DIR/$a.$ext" "$a.$ext" 644
     done

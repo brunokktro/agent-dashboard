@@ -13,6 +13,7 @@ non-destructive, `--force` backs your copies up first).
 | `heartbeat` | shell job | every 15 min | Verifies the server serves the app (200 **and** HTML) and that the API reads your ecosystem. Also gives the Overview, heatmap and health score genuine data immediately. |
 | `log-hygiene` | shell job | weekly | Compresses logs past `DASHBOARD_BIG_LOG_MB` and keeps the tail live. Never deletes - it archives, verifies the archive, and only then truncates. |
 | `failure-triage` | agent | on demand / daily | Diagnoses the last 24h of failed runs through the dashboard's own `/api/runs/{id}/diagnose`, groups repeats into one incident, and reports what needs a human. Read-only. |
+| `backlog-reviewer` | agent | on demand | Turns ONE backlog item into a review note: what is actually true today, the smallest plan, the blast radius and the exact validation. It never approves its own work and never executes the item - approving is a human click in the dashboard. |
 | `dashboard-support` | agent | on demand | Guided install and troubleshooting, locally or over a chat DM. Lives in [`../agents`](../agents). |
 
 The two shell jobs need **no LLM and no kiro-cli** - they are plain scripts your

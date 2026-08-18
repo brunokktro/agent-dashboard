@@ -4,8 +4,8 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { toast } from "sonner"
 import {
-  Check, CheckCircle2, ChevronDown, ChevronUp, ClipboardList, Copy,
-  MessageSquareText, Search, Trash2, X,
+  Check, CheckCircle2, ChevronDown, ChevronUp, ClipboardList, Copy, Loader,
+  MessageSquareText, Search, Trash2, TriangleAlert, X,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -24,6 +24,7 @@ interface Item {
   agent: string
   priority: string
   created: string
+  state?: string
 }
 
 const AUTONOMY_TONE: Record<string, string> = {
@@ -379,9 +380,11 @@ export default function BacklogPage() {
 
   const cols = [
     { key: "active", label: "Active backlog", icon: ClipboardList, items: filter(data.active as Item[]) },
+    { key: "running", label: "Running", icon: Loader, items: filter((data.running ?? []) as Item[]) },
+    { key: "failed", label: "Failed", icon: TriangleAlert, items: filter((data.failed ?? []) as Item[]) },
     { key: "review_notes", label: "Review notes", icon: MessageSquareText, items: filter((data.review_notes ?? []) as Item[]) },
     { key: "done", label: "Done", icon: CheckCircle2, items: filter((data.done as Item[])).slice(0, 40) },
-  ]
+  ].filter((c) => c.items.length > 0 || ["active", "review_notes", "done"].includes(c.key))
 
   const chip = (label: string) => (
     <button key={label}
@@ -405,7 +408,7 @@ export default function BacklogPage() {
         {["autonomous", "review", "blocked"].map(chip)}
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-3 gap-4">
+      <div className="grid min-h-0 flex-1 gap-4" style={{ gridTemplateColumns: `repeat(${cols.length}, minmax(0, 1fr))` }}>
         {cols.map(({ key, label, icon: Icon, items }) => (
           <div key={key} className="flex min-h-0 flex-col rounded-xl border bg-muted/30">
             <div className="flex items-center gap-2 border-b px-3 py-2.5">

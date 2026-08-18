@@ -1,5 +1,7 @@
-import { useState } from "react"
-import { ArrowUpCircle, Check, RefreshCw, TriangleAlert } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import {
+  ArrowUpCircle, Check, Copy, RefreshCw, TriangleAlert, X,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 
 interface VersionInfo {
@@ -12,25 +14,58 @@ interface VersionInfo {
   url: string | null
 }
 
+/** Remembered across reloads, so "you are behind" does not vanish on refresh. */
+const SEEN_KEY = "dashboard.update.seen"
+
+type Seen = { latest: string; current: string; at: string }
+
+function loadSeen(): Seen | null {
+  try {
+    const raw = localStorage.getItem(SEEN_KEY)
+    return raw ? (JSON.parse(raw) as Seen) : null
+  } catch {
+    return null
+  }
+}
+
 /**
- * On-demand update check. It calls out to the upstream repo ONLY when clicked -
- * the dashboard makes no background network requests, which also means the
- * result is never stale-but-silent: you see exactly what the last click found.
- * A failed check reports as a failure, never as "up to date".
+ * Update awareness, deliberately in three separable parts:
  *
- * Two defects fixed after real use, both worth keeping in mind:
- *  - `cache: "no-store"` (and the same header from the API): without it the
- *    browser heuristically caches the GET, so a second click answers from cache
- *    and the check silently stops checking.
- *  - the "see repo" link is a SIBLING of the button, never nested inside it:
- *    interactive content inside a <button> is invalid HTML and made the click
- *    behave erratically.
+ *  1. a marker that PERSISTS once a newer release was seen (localStorage), so
+ *     the fact that you are on an older version survives a reload instead of
+ *     being re-discovered on every click;
+ *  2. a panel that shows the outcome of a check as a STATE, never as a flash -
+ *     a failed check reads as "could not check", not as breakage;
+ *  3. an update path that only ever hands you the command. Nothing here mutates
+ *     the installation: a dashboard that git-pulls and rebuilds itself while
+ *     running is a foot-gun (dirty tree, local commits, a service that needs a
+ *     restart), and it must never happen without you asking for it.
  */
 export function UpdateCheck() {
   const [info, setInfo] = useState<VersionInfo | null>(null)
   const [busy, setBusy] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [seen, setSeen] = useState<Seen | null>(loadSeen)
+  const panel = useRef<HTMLDivElement>(null)
+
+  // close the panel on outside click / Escape - it opens, so it must close
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!panel.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false)
+    document.addEventListener("mousedown", onDown)
+    document.addEventListener("keydown", onKey)
+    return () => {
+      document.removeEventListener("mousedown", onDown)
+      document.removeEventListener("keydown", onKey)
+    }
+  }, [open])
 
   const check = async () => {
+    setOpen(true)
     setBusy(true)
     try {
       const r = await fetch("/api/version?check=1", {
@@ -38,81 +73,157 @@ export function UpdateCheck() {
         headers: { "Cache-Control": "no-cache" },
       })
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      setInfo(await r.json())
+      const d: VersionInfo = await r.json()
+      setInfo(d)
+      if (d.update_available && d.latest) {
+        const rec = { latest: d.latest, current: d.current, at: new Date().toISOString() }
+        localStorage.setItem(SEEN_KEY, JSON.stringify(rec))
+        setSeen(rec)
+      } else if (!d.error) {
+        // we are current: the marker has served its purpose
+        localStorage.removeItem(SEEN_KEY)
+        setSeen(null)
+      }
     } catch (e) {
       setInfo({
-        current: info?.current ?? "?", latest: null, update_available: false,
-        checked: true, error: String(e), repo: info?.repo ?? null, url: info?.url ?? null,
+        current: info?.current ?? seen?.current ?? "?", latest: null,
+        update_available: false, checked: true, error: String(e),
+        repo: info?.repo ?? null, url: info?.url ?? null,
       })
     } finally {
       setBusy(false)
     }
   }
 
-  const state = busy
-    ? "busy"
-    : !info
-      ? "idle"
-      : info.error
-        ? "error"
-        : info.update_available
-          ? "update"
-          : "current"
+  const command = "git pull && (cd frontend && npm run build)"
+  const behind = !!seen // a newer release was seen and not yet installed
 
-  const { Icon, label, tone, title } = {
-    busy: {
-      Icon: RefreshCw, label: "Checking…", tone: "text-muted-foreground",
-      title: "Asking the upstream repo",
-    },
-    idle: {
-      Icon: RefreshCw, label: "Check version", tone: "text-muted-foreground",
-      title: "Check the upstream repo for a newer version. Nothing is checked " +
-             "in the background - only when you click.",
-    },
-    error: {
-      Icon: TriangleAlert, label: "Check failed", tone: "text-amber-600",
-      title: `${info?.error ?? "unknown error"} - click to retry. A failed ` +
-             "check is not a verdict: your version may or may not be current.",
-    },
-    update: {
-      Icon: ArrowUpCircle, label: `v${info?.latest} available`,
-      tone: "text-blue-600 font-medium",
-      title: `You are on ${info?.current}, upstream has ${info?.latest}. ` +
-             "CHANGELOG.md lists what changed. Update with: git pull && " +
-             "(cd frontend && npm run build). Installed as a KiroCrew app? " +
-             "Update it from the App Store instead. Click to check again.",
-    },
-    current: {
-      Icon: Check, label: `v${info?.current}`, tone: "text-muted-foreground",
-      title: `Up to date - checked against ${info?.repo ?? "the upstream repo"}. ` +
-             "Click to check again. Note: the upstream file is CDN-cached for a " +
-             "few minutes, so a release published seconds ago may not show yet.",
-    },
-  }[state]
-
+  // The trigger never changes shape while working: same width, same position,
+  // so a check does not make the header jump or look like it broke.
   return (
-    <span className="flex items-center gap-1">
+    <span className="relative flex items-center">
       <Button
         variant="ghost"
         size="sm"
-        className={`h-7 min-w-[7.5rem] justify-start gap-1.5 px-2 text-xs tabular-nums ${tone}`}
-        onClick={check}
-        disabled={busy}
-        title={title}
+        className={`h-7 gap-1.5 px-2 text-xs tabular-nums ${
+          behind ? "text-blue-600" : "text-muted-foreground"
+        }`}
+        onClick={() => (open ? setOpen(false) : check())}
+        title={behind
+          ? `A newer release (v${seen!.latest}) was found. Click for details.`
+          : "Check the upstream repo for a newer version. Nothing is checked in the background."}
       >
-        <Icon className={`size-3.5 shrink-0 ${busy ? "animate-spin" : ""}`} />
-        <span className="truncate">{label}</span>
+        {busy ? (
+          <RefreshCw className="size-3.5 shrink-0 animate-spin" />
+        ) : behind ? (
+          <ArrowUpCircle className="size-3.5 shrink-0" />
+        ) : (
+          <RefreshCw className="size-3.5 shrink-0" />
+        )}
+        <span>{busy ? "Checking…" : behind ? `v${seen!.latest}` : "Version"}</span>
+        {behind && <span className="size-1.5 rounded-full bg-blue-500" aria-hidden />}
       </Button>
-      {info?.update_available && info.url && (
-        <a
-          href={info.url}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="text-xs text-blue-600 underline hover:no-underline"
-          title="Open the upstream repository"
+
+      {open && (
+        <div
+          ref={panel}
+          className="absolute right-0 top-9 z-50 w-80 rounded-lg border bg-background p-3 text-xs shadow-lg"
+          role="dialog"
+          aria-label="Update status"
         >
-          repo
-        </a>
+          <div className="mb-2 flex items-center justify-between">
+            <span className="font-medium">Update</span>
+            <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground">
+              <X className="size-3.5" />
+            </button>
+          </div>
+
+          {busy && (
+            <p className="flex items-center gap-2 text-muted-foreground">
+              <RefreshCw className="size-3.5 animate-spin" /> Asking {info?.repo ?? "the upstream repo"}…
+            </p>
+          )}
+
+          {!busy && info?.error && (
+            <div className="space-y-2">
+              <p className="flex items-start gap-2 text-amber-600">
+                <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+                <span>Could not check - your install is fine, the check is not.</span>
+              </p>
+              <p className="text-muted-foreground">{info.error}</p>
+              <p className="text-muted-foreground">
+                Installed: <span className="font-medium">v{info.current}</span>. Whether a
+                newer release exists is unknown right now.
+              </p>
+              <Button size="sm" variant="outline" className="h-7 w-full text-xs" onClick={check}>
+                Try again
+              </Button>
+            </div>
+          )}
+
+          {!busy && info && !info.error && !info.update_available && (
+            <div className="space-y-1.5">
+              <p className="flex items-center gap-2 text-emerald-600">
+                <Check className="size-3.5" /> Up to date
+              </p>
+              <p className="text-muted-foreground">
+                Installed <span className="font-medium">v{info.current}</span>, and{" "}
+                {info.repo} has no newer release.
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                The upstream file is CDN-cached for a few minutes, so a release published
+                seconds ago may not show yet.
+              </p>
+            </div>
+          )}
+
+          {!busy && info?.update_available && (
+            <div className="space-y-2">
+              <p className="flex items-center gap-2 text-blue-600">
+                <ArrowUpCircle className="size-3.5" /> v{info.latest} is available
+              </p>
+              <p className="text-muted-foreground">
+                You are on <span className="font-medium">v{info.current}</span>. Nothing was
+                changed - updating is your call.
+              </p>
+              <div className="rounded border bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
+                {command}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 flex-1 gap-1.5 text-xs"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(command)
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 1500)
+                  }}
+                >
+                  <Copy className="size-3.5" /> {copied ? "Copied" : "Copy command"}
+                </Button>
+                {info.url && (
+                  <Button asChild size="sm" variant="outline" className="h-7 flex-1 text-xs">
+                    <a href={`${info.url}/blob/main/CHANGELOG.md`} target="_blank" rel="noreferrer noopener">
+                      What changed
+                    </a>
+                  </Button>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Restart the server afterwards. Installed as a KiroCrew app? Update it from
+                the App Store instead.
+              </p>
+            </div>
+          )}
+
+          {!busy && !info && behind && (
+            <p className="text-muted-foreground">
+              A newer release (v{seen!.latest}) was found on{" "}
+              {new Date(seen!.at).toLocaleString()}. Click Version to check again.
+            </p>
+          )}
+        </div>
       )}
     </span>
   )
