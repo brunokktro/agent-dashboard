@@ -85,7 +85,7 @@ Works from cron, launchd, Makefiles, CI, Claude Code hooks. Recorded runs appear
 
 If you use [KiroCrew](https://kiro.dev/docs/crew/), this dashboard is also packaged as a **Crew App** - the `app.json` at the repo root is the manifest. Installed as an app, it shows up in the Crew sidebar with everything working (terminals and live streams included), the backend is spawned and health-checked by the gateway on an automatic port, and **no Node or manual build is needed** - the built UI ships in the repo.
 
-> **Coming to the App Store registry:** agent-dashboard has been submitted to the official KiroCrew App Registry ([kirodotdev/KiroCrew#3241](https://github.com/kirodotdev/KiroCrew/pull/3241)). Once merged, it installs with one click from the App Store tab.
+> **Coming to the App Store registry:** the official catalog lives in [kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps), open-sourced on 5 Sep 2026. agent-dashboard is proposed there in [KiroCrewApps#46](https://github.com/kirodotdev/KiroCrewApps/pull/46), pinned to the `release` branch so the install needs no Node. Once merged, it installs with one click from the App Store tab. (An earlier proposal, [KiroCrew#3241](https://github.com/kirodotdev/KiroCrew/pull/3241), was closed by the maintainers pending exactly that catalog repo.)
 
 **Where the built bundles live.** `main` never tracks build output - it is a source branch. The App Store installs from the **`release`** branch, which is `main` plus one generated commit carrying the built `frontend/dist` and `ui/dist`, so an install needs no Node on the target machine (the installer never runs a build). That branch is produced, never hand-edited:
 
