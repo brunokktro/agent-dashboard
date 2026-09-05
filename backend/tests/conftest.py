@@ -19,7 +19,13 @@ from dashboard.config import Settings, get_settings
 from dashboard.datastore import Datastore
 from dashboard.main import create_app
 
-NOW = datetime(2026, 8, 6, 12, 0, 0)
+# Anchored to the current run, NOT a fixed calendar date. `observability.heatmap`
+# filters on a RELATIVE window (`datetime.now() - 30 days`), so a hardcoded NOW
+# ages out silently: pinned at 2026-08-06, the 25h/26h runs fell outside the
+# window on 2026-09-05 - exactly 30 days later - and test_observability_heatmap
+# began failing with no code change. A fixture that shares neither the code's
+# clock nor its window is a time bomb, so the anchor moves with the run.
+NOW = datetime.now().replace(microsecond=0)
 
 
 def make_run(conn, job_id: str, status: str = "success", *,
