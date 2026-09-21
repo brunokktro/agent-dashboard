@@ -132,6 +132,17 @@ export interface LogFile {
   mtime: string
 }
 
+export interface PizzaStatus {
+  available: boolean
+  healthy: boolean
+  compatible: boolean
+  detail: string | null
+  service: string | null
+  protocol_version: number | null
+  api_version: string | null
+  web_url: string
+}
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path)
   if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`)
@@ -155,6 +166,7 @@ export const api = {
   health: () => get<{ agents: HealthAgent[] }>("/api/health"),
   supervisor: () => get<SupervisorData>("/api/supervisor"),
   logs: () => get<{ files: LogFile[] }>("/api/logs"),
+  pizza: () => get<PizzaStatus>("/api/pizza/status"),
 
   triggerJob: (jobId: string) => post<{ ok: boolean; agent: string }>(`/api/trigger/${jobId}`),
   triggerAgent: (name: string) => post<{ ok: boolean; log: string }>(`/api/trigger-agent/${name}`),

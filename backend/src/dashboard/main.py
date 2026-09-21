@@ -14,6 +14,7 @@ from .config import get_settings
 from .events import router as events_router
 from .observability import router as obs_router
 from .pipe import router as pipe_router
+from .pizza import router as pizza_router
 from .streams import router as streams_router
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(obs_router)
     app.include_router(events_router)
     app.include_router(pipe_router)
+    app.include_router(pizza_router)
 
     # A page this dashboard no longer serves forwards to its new home. This is
     # middleware, not a route, for a concrete reason: the SPA fallback is already
