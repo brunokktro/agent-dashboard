@@ -178,9 +178,24 @@ export default function QueuePage() {
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-sm font-medium">{item.agent}</span>
-                        <span className="shrink-0 text-[11px] text-muted-foreground">
-                          {relativeTime(item.created)}
-                        </span>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {/* Pending EXECUTES by priority, but is LISTED newest-first. Label the
+                              bands that deviate from `medium` so a run that jumps the visual
+                              order is explainable instead of looking like a bug. Text, not
+                              colour alone - the board has to stay readable for colourblind eyes. */}
+                          {key === "pending" && (item.priority === "high" || item.priority === "low") && (
+                            <Badge
+                              variant="outline"
+                              className="px-1.5 py-0 text-[10px] font-medium uppercase"
+                              title={`priority: ${item.priority} — runs ${item.priority === "high" ? "before" : "after"} medium`}
+                            >
+                              {item.priority}
+                            </Badge>
+                          )}
+                          <span className="text-[11px] text-muted-foreground">
+                            {relativeTime(item.created)}
+                          </span>
+                        </div>
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground" title={item.input}>
                         {item.input}
