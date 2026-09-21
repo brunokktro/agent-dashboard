@@ -19,6 +19,7 @@ This dashboard is the observability half of that missing layer: not a wrapper ar
 - 🔍 **Failure diagnosis** - one click explains a failed run: exit-code meaning, the run's own log segment, and known-pattern detection (expired auth, missing deps, timeouts, rate limits...). Every run logged, every failure categorized.
 - 🖥️ **Multi-terminal console** - up to 6 simultaneous PTY sessions that **survive page refreshes**, with a broadcast bar to ask all agents the same thing.
 - 🔗 **Pipe mode** - multi-agent orchestration made visible: chain agents so the output of one becomes the prompt of the next, with an animated flow view, live streaming and visible hand-offs.
+- 🕸️ **A2A observability** - a read-only view over a file-based inter-agent protocol: durable handoffs (delivery queue + audit), broadcast/targeted discoveries, consumer watermarks, and drift detection (a handoff nothing will execute). Bring your own agents; instrument them with `bin/init-ecosystem --a2a` and [`docs/a2a-instrumentation.md`](docs/a2a-instrumentation.md).
 - 📅 **A real scheduler view** - if your agents run on plain cron (launchd, crontab), the Supervisor gives them what cron never had: plain-English schedules, next-run countdowns, failure pinning, one-click runs, inline cron editing and enable/disable.
 - 📦 **Battle-tested at scale** - born from an ecosystem of 20+ autonomous agents running on a single laptop with zero manual maintenance: the dashboard is how that fleet stays observable.
 
@@ -38,6 +39,7 @@ This dashboard is the observability half of that missing layer: not a wrapper ar
 | **Supervisor** - clickable KPI filters, "up next" countdowns, cron in plain English | ![Supervisor](docs/img/supervisor.png) |
 | **Console** - multi-terminal grid, agent chat sessions that survive refreshes, broadcast bar | ![Console](docs/img/console.png) |
 | **Pipe mode** - chain agents with an animated flow view and live-streamed output (~1s latency) | ![Pipe](docs/img/pipe.png) |
+| **A2A** - inter-agent protocol observability: handoffs, discoveries, watermarks, audit-vs-queue drift ([setup](docs/a2a-instrumentation.md)) | reads canonical protocol scripts; degrades to an explicit *unavailable* when they are absent |
 | **Logs** - live tail with SSE, error highlighting, deep-linkable files | ![Logs](docs/img/logs.png) |
 
 Per-agent observability: 30-day P50/P95/P99 duration percentiles and success-rate charts on every agent page.
