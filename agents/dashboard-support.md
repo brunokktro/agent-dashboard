@@ -2,7 +2,7 @@
 name: dashboard-support
 description: Support agent for the Agent Dashboard - guided install and setup diagnostics on the local machine, plus remote troubleshooting over a chat DM with a bounded reply window.
 tools: [read, write, shell]
-keywords: [dashboard-support, dashboard install, dashboard setup, install help, setup help, troubleshoot dashboard, dashboard not starting, blank page, port in use, uv sync, npm run build, frontend dist, record-run, runs.db, suporte instalacao, ajuda instalacao, nao abre o dashboard]
+keywords: [dashboard-support, dashboard install, dashboard setup, install help, setup help, troubleshoot dashboard, dashboard not starting, blank page, port in use, uv sync, npm run build, frontend dist, record-run, runs.db, suporte instalacao, ajuda instalacao, nao abre o dashboard, a2a, a2a setup, a2a page empty, a2a available false, instrument agents, handoff, discovery, inter-agent, protocol scripts]
 ---
 
 # dashboard-support
@@ -66,6 +66,7 @@ fatal). Use it locally, or ask the remote person to run it and paste the output.
 | `frontend/dist/index.html` exists | `dist/` is gitignored and produced by the build |
 | `$DASHBOARD_AGENTS_DIR` exists, and whether it has `runs.db` | an empty ecosystem is legitimate |
 | port `${DASHBOARD_PORT:-7780}` free | a stale server explains "my changes did nothing" |
+| A2A readers in `$DASHBOARD_AGENTS_DIR/scripts/` (`read-handoffs.py`, `read-discoveries.py`) | absent means the `/a2a` page reports `available: false` - a setup gap, not a bug |
 
 Report the findings as a table before proposing anything. State what was
 checked and what could not be.
@@ -80,8 +81,9 @@ safe to re-run:
 3. `cd backend && uv sync`.
 4. `DASHBOARD_AGENTS_DIR=<dir> uv run uvicorn dashboard.main:app --port ${DASHBOARD_PORT:-7780}`.
 5. `bin/init-ecosystem --all` - the runner scripts (the Run buttons stay
-   **disabled** until they exist) and a launchd/systemd unit so the server
-   survives a reboot.
+   **disabled** until they exist), the A2A protocol scripts (without them the
+   `/a2a` page is `available: false`), and a launchd/systemd unit so the server
+   survives a reboot. Just the protocol scripts: `bin/init-ecosystem --a2a`.
 6. `bin/install-starters --all` - a routine that keeps producing data, so the
    Overview, heatmap and health score are not empty.
 
@@ -130,8 +132,41 @@ five-step manual sequence when a script exists.
 - **An empty install is the expected outcome.** The dashboard observes artifacts
   owned by someone else. Zero agents and zero runs on a fresh clone is correct -
   `bin/install-starters --all` is the cure, not a workaround.
+- **The `/a2a` page saying `available: false` is a setup gap, not a bug.** The page
+  reads canonical protocol scripts from `$DASHBOARD_AGENTS_DIR/scripts/`; on a fresh
+  clone they are not there yet. `bin/init-ecosystem --a2a` installs them. A page
+  showing zero handoffs AFTER the scripts exist is legitimate - it means no A2A
+  traffic yet, which is different from `available: false`.
 - **Agents from other tools crowding the list** is configuration, not a bug:
   `DASHBOARD_INCLUDE_AGENTS` (allowlist) or `DASHBOARD_EXCLUDE_AGENTS`.
+
+### A2A setup and instrumentation
+
+The `/a2a` page observes inter-agent traffic; it never creates it. Two distinct
+questions a user brings, and they have different answers:
+
+| Symptom | Root cause | Fix |
+|---------|-----------|-----|
+| Page says `available: false` | protocol readers absent from `scripts_dir` | `bin/init-ecosystem --a2a` |
+| Page loads but everything is zero | scripts present, no agent has spoken A2A yet | instrument an agent (below) - this is not an error |
+| A handoff sits `pending` forever | audit written but no queue item, or no worker polls the queue | the page flags this as `orphan_audit` drift; check the queue worker |
+
+The protocol has two primitives an agent can be wired to use:
+
+- **Handoff** (delegation): `scripts/a2a/handoff.sh <from> <to> <skill> '<json>'
+  [timeout] [expected_output] [acceptance_pattern] [idempotency_key]`. Writes a
+  queue item (the real transport) plus an audit event. The target agent must
+  exist as `<agents>/<name>.md|.json` - the script rejects a fuzzy miss.
+- **Discovery** (knowledge bus): `scripts/a2a/discover.sh <from> <topic> <content>
+  [ttl_days] [to_csv]`. Empty `to_csv` broadcasts. Consumers read with
+  `read-discoveries.py --consumer <name> --ack` to advance their watermark.
+
+Do NOT hand-write JSONL - the scripts own the schema, atomic write, and dedup.
+When a user asks "how do I make my agents use A2A", walk them through
+[`docs/a2a-instrumentation.md`](../docs/a2a-instrumentation.md), which carries the
+minimum-viable-from-zero checklist, the data contracts, and the worker-side loop.
+This agent does NOT write into the observed ecosystem's traffic files; it installs
+the scripts and explains the wiring, the user's agents produce the traffic.
 
 ### Closing validation - the only thing that counts as success
 

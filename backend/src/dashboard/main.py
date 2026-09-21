@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from .a2a import router as a2a_router
 from .api import router
 from .config import get_settings
 from .events import router as events_router
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(obs_router)
     app.include_router(events_router)
     app.include_router(pipe_router)
+    app.include_router(a2a_router)
 
     # A page this dashboard no longer serves forwards to its new home. This is
     # middleware, not a route, for a concrete reason: the SPA fallback is already

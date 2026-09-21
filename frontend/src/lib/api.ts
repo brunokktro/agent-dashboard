@@ -132,6 +132,82 @@ export interface LogFile {
   mtime: string
 }
 
+/** ── A2A (inter-agent protocol) ──────────────────────────────────────
+ *  Mirrors the payload of GET /api/a2a. Every field is produced by the
+ *  ecosystem's canonical readers (read-handoffs.py / read-discoveries.py) -
+ *  notably `status: "stale"`, which is DERIVED from timeout_sec upstream and
+ *  never stored on disk. */
+export type HandoffStatus =
+  | "pending" | "running" | "done" | "failed" | "deferred" | "canceled" | "stale" | "unknown"
+
+export interface Handoff {
+  id: string
+  ts: string
+  from: string | null
+  to: string | null
+  skill: string | null
+  status: HandoffStatus
+  result: string | null
+  expected_output: string | null
+  acceptance_pattern: string | null
+  timeout_sec: number | null
+  trace_id: string | null
+  has_input: boolean
+  input_keys: string[]
+}
+
+export interface Discovery {
+  ts: string
+  from: string | null
+  topic: string | null
+  to: string[]
+  broadcast: boolean
+  ttl_days: number
+  content: string
+  truncated: boolean
+  content_chars: number
+}
+
+export interface Watermark {
+  consumer: string
+  watermark: string | null
+  never_acked: boolean
+  lag: number
+  lag_capped: boolean
+}
+
+/** A disagreement between the audit log and the real delivery queue. */
+export interface Drift {
+  id: string
+  kind: "orphan_audit" | "untracked_queue"
+  status: string
+  to: string | null
+  detail: string
+}
+
+export interface A2AData {
+  available: boolean
+  degraded: string[]
+  sources: {
+    handoffs: string
+    discoveries: string
+    watermarks: string
+    queue: string
+    parsers: Record<string, string>
+    handoffs_exists: boolean
+    discoveries_exists: boolean
+  }
+  queue: {
+    counts: Record<string, number>
+    queue_totals: Record<string, number>
+    capped: string[]
+  }
+  handoffs: { counts: Record<string, number>; total: number; items: Handoff[]; shown: number }
+  discoveries: { total: number; newest_ts: string | null; since_hours: number; items: Discovery[] }
+  watermarks: Watermark[]
+  drift: Drift[]
+}
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path)
   if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`)
@@ -155,6 +231,7 @@ export const api = {
   health: () => get<{ agents: HealthAgent[] }>("/api/health"),
   supervisor: () => get<SupervisorData>("/api/supervisor"),
   logs: () => get<{ files: LogFile[] }>("/api/logs"),
+  a2a: () => get<A2AData>("/api/a2a"),
 
   triggerJob: (jobId: string) => post<{ ok: boolean; agent: string }>(`/api/trigger/${jobId}`),
   triggerAgent: (name: string) => post<{ ok: boolean; log: string }>(`/api/trigger-agent/${name}`),
