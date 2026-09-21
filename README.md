@@ -38,6 +38,7 @@ This dashboard is the observability half of that missing layer: not a wrapper ar
 | **Supervisor** - clickable KPI filters, "up next" countdowns, cron in plain English | ![Supervisor](docs/img/supervisor.png) |
 | **Console** - multi-terminal grid, agent chat sessions that survive refreshes, broadcast bar | ![Console](docs/img/console.png) |
 | **Pipe mode** - chain agents with an animated flow view and live-streamed output (~1s latency) | ![Pipe](docs/img/pipe.png) |
+| **Pizza Bot Inbox** - long-running threads, unread results and actions waiting for your decision, backed by a loopback DeepAgents/LangGraph sidecar | See [`docs/pizza.md`](docs/pizza.md) |
 | **Logs** - live tail with SSE, error highlighting, deep-linkable files | ![Logs](docs/img/logs.png) |
 
 Per-agent observability: 30-day P50/P95/P99 duration percentiles and success-rate charts on every agent page.
@@ -176,6 +177,7 @@ Everything is environment-driven - no hardcoded paths.
 | `DASHBOARD_UPSTREAM_REPO` | `brunokktro/agent-dashboard` | `owner/name` checked by the header's update button; empty disables the check |
 | `DASHBOARD_EXTRA_HINTS` | `[]` | Site-specific failure hints for the run diagnosis, JSON list of `[regex, hint]` pairs matched against the failing run's log (e.g. `'[["corp-sso","SSO expired - re-authenticate"]]'`) - keeps internal tool names out of the code |
 | `DASHBOARD_REDIRECTS` | `{}` | Paths this dashboard no longer serves, mapped to where they now live: `{"/old-page": "http://localhost:7781/old-page"}`. Answers 307 so a bookmark never dead-ends. |
+| `DASHBOARD_PIZZA_URL` | `http://127.0.0.1:7782` | Loopback-only Pizza Bot sidecar shown in the `/pizza` tab. Non-loopback values are rejected. |
 
 Running under an app host (e.g. as a KiroCrew app) the backend gets a minimal environment, so `DASHBOARD_*` vars cannot reach it. There, the host's per-app settings file is the configuration channel: `$KIROCREW_HOME/apps/agent-dashboard/data/config.json` (editable via the host's `PUT /api/apps/agent-dashboard/config`), accepting `exclude_agents`, `extra_hints`, `big_log_mb`, `stuck_after_minutes`, `job_agent_overrides` and `agent_deps` with the same shapes as the env vars. Recognized keys override the environment; the file is optional.
 

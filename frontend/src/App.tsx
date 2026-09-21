@@ -3,7 +3,7 @@ import { api } from "@/lib/api"
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation } from "react-router-dom"
 import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Activity, Bot, HeartPulse, ListTodo, CircleHelp, Moon, ScrollText, Settings2, SquareTerminal, Sun } from "lucide-react"
+import { Activity, Bot, HeartPulse, ListTodo, CircleHelp, Moon, Pizza as PizzaIcon, ScrollText, Settings2, SquareTerminal, Sun } from "lucide-react"
 import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command"
@@ -17,6 +17,7 @@ import SupervisorPage from "@/pages/Supervisor"
 import LogsPage from "@/pages/Logs"
 import ConsolePage from "@/pages/Console"
 import HelpPage from "@/pages/Help"
+import PizzaBotPage from "@/pages/PizzaBot"
 import { UpdateCheck } from "@/components/UpdateCheck"
 
 /** Any unknown path. Without this an unmatched route renders a blank page - the
@@ -53,6 +54,7 @@ const tabs = [
   { to: "/", label: "Overview", icon: Activity },
   { to: "/agents", label: "Agents", icon: Bot },
   { to: "/queue", label: "Board", icon: ListTodo },
+  { to: "/pizza", label: "Pizza", icon: PizzaIcon },
   { to: "/health", label: "Health", icon: HeartPulse },
   { to: "/supervisor", label: "Supervisor", icon: Settings2 },
   { to: "/console", label: "Console", icon: SquareTerminal },
@@ -142,7 +144,8 @@ function DarkToggle() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   useLiveEvents()
-  const isConsole = useLocation().pathname.startsWith("/console")
+  const path = useLocation().pathname
+  const isFullWidth = path.startsWith("/console") || path.startsWith("/pizza")
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
@@ -178,7 +181,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
       <CommandPalette />
-      <main className={`mx-auto px-4 py-4 ${isConsole ? "max-w-full" : "max-w-7xl py-6"}`}>{children}</main>
+      <main className={`mx-auto px-4 py-4 ${isFullWidth ? "max-w-full" : "max-w-7xl py-6"}`}>{children}</main>
     </div>
   )
 }
@@ -193,6 +196,7 @@ export default function App() {
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/agent/:name" element={<AgentPage />} />
             <Route path="/queue" element={<QueuePage />} />
+            <Route path="/pizza" element={<PizzaBotPage />} />
             <Route path="/health" element={<HealthPage />} />
             <Route path="/supervisor" element={<SupervisorPage />} />
             <Route path="/logs" element={<LogsPage />} />
