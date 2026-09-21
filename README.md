@@ -33,7 +33,7 @@ This dashboard is the observability half of that missing layer: not a wrapper ar
 | | |
 |---|---|
 | **Agents** - searchable grid with health scores, trends and one-click run/terminal | ![Agents](docs/img/agents.png) |
-| **Board** - work-items kanban (running / pending / failed / done) with retry, cancel and detail panel; plus Backlog & Review-notes views | ![Board](docs/img/queue.png) |
+| **Board** - work-items kanban (running / pending / failed / done) with retry, cancel and detail panel; Pending cards show priority while execution uses priority then FIFO and the view stays newest-first. Discarded backlog items move to the configurable `Downloads/ToDelete/backlog-deleted/`, never an internal permanent trash | ![Board](docs/img/queue.png) |
 | **Health** - day×hour activity heatmap (failure-tinted) + worst-first score cards | ![Health](docs/img/health.png) |
 | **Supervisor** - clickable KPI filters, "up next" countdowns, cron in plain English | ![Supervisor](docs/img/supervisor.png) |
 | **Console** - multi-terminal grid, agent chat sessions that survive refreshes, broadcast bar | ![Console](docs/img/console.png) |

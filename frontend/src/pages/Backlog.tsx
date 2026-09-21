@@ -320,7 +320,7 @@ function ItemReader({ item, bucket, siblings, onNavigate, onClose }: {
             <Button size="sm" variant="ghost"
               className="text-muted-foreground hover:text-red-600"
               onClick={() => act("/api/backlog/delete", { bucket },
-                "Moved to backlog/deleted/ (reversible)")}>
+                "Moved to Downloads/ToDelete/backlog-deleted/ (reversible)")}>
               <Trash2 className="size-4" /> Delete
             </Button>
           )}

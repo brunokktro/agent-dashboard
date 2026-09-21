@@ -8,6 +8,7 @@ import os
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Response
@@ -779,7 +780,7 @@ def review_note_reject(body: RejectBody,
 @router.post("/api/backlog/delete")
 def backlog_delete(body: DeleteBody,
                    settings: Annotated[Settings, Depends(get_settings)]):
-    """Soft-delete: move the item (and its review note, if any) to deleted/ folders."""
+    """Move a discarded item to the centralized user-owned ToDelete folder."""
     file = _safe_md(body.file)
     base = settings.agents_dir / "backlog"
     src = (base / "done" / file) if body.bucket == "done" else (base / file)
@@ -787,17 +788,19 @@ def backlog_delete(body: DeleteBody,
         raise HTTPException(404, "backlog item not found")
     ts = datetime.now().strftime("%Y%m%dT%H%M%S")
     stem = file[:-3]
-    deleted = base / "deleted"
-    deleted.mkdir(parents=True, exist_ok=True)
-    src.rename(deleted / f"{stem}-{ts}.md")
-    note = base / "review-notes" / file
+    trash = Path(os.environ.get(
+        "DASHBOARD_TODELETE_DIR", str(Path.home() / "Downloads" / "ToDelete")
+    )) / "backlog-deleted"
+    trash.mkdir(parents=True, exist_ok=True)
+    src.rename(trash / f"{stem}-{ts}.md")
+    note_base = base / "review-notes"
+    note = (note_base / "applied" / file) if body.bucket == "done" else (note_base / file)
     note_moved = False
     if note.is_file():
-        note_deleted = base / "review-notes" / "deleted"
-        note_deleted.mkdir(parents=True, exist_ok=True)
-        note.rename(note_deleted / f"{stem}-{ts}.md")
+        note.rename(trash / f"{stem}-{ts}.review-note.md")
         note_moved = True
-    return {"ok": True, "note_moved": note_moved}
+    return {"ok": True, "note_moved": note_moved,
+            "destination": "Downloads/ToDelete/backlog-deleted"}
 
 
 class ReorderBody(BaseModel):

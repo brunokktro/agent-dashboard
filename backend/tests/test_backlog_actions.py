@@ -102,24 +102,41 @@ def test_reject_sets_status_and_optional_reason(client, backlog):
     assert "status: rejected" in note and "not worth it" in note
 
 
-def test_delete_moves_item_and_note_with_timestamp(client, backlog):
+@pytest.fixture(autouse=True)
+def todelete_dir(tmp_path, monkeypatch):
+    path = tmp_path / "ToDelete"
+    monkeypatch.setenv("DASHBOARD_TODELETE_DIR", str(path))
+    return path
+
+
+def test_delete_moves_item_and_note_with_timestamp(client, backlog, todelete_dir):
     r = client.post("/api/backlog/delete",
                     json={"file": "reclaim-stale-locks.md", "bucket": "active"})
     assert r.status_code == 200 and r.json()["note_moved"] is True
+    assert r.json()["destination"] == "Downloads/ToDelete/backlog-deleted"
     assert not (backlog / "reclaim-stale-locks.md").exists()
     assert not (backlog / "review-notes" / "reclaim-stale-locks.md").exists()
-    trashed = list((backlog / "deleted").glob("reclaim-stale-locks-*.md"))
-    note_trashed = list((backlog / "review-notes" / "deleted").glob("reclaim-stale-locks-*.md"))
+    trash = todelete_dir / "backlog-deleted"
+    trashed = [p for p in trash.glob("reclaim-stale-locks-*.md")
+               if not p.name.endswith(".review-note.md")]
+    note_trashed = list(trash.glob("reclaim-stale-locks-*.review-note.md"))
     assert len(trashed) == 1 and len(note_trashed) == 1
-    # content preserved (soft delete, reversible)
     assert "Locks survive SIGKILL" in trashed[0].read_text()
 
 
-def test_delete_from_done_bucket(client, backlog):
+def test_delete_from_done_bucket(client, backlog, todelete_dir):
+    applied = backlog / "review-notes" / "applied"
+    applied.mkdir(parents=True, exist_ok=True)
+    (applied / "shipped-item.md").write_text("review evidence")
     r = client.post("/api/backlog/delete",
                     json={"file": "shipped-item.md", "bucket": "done"})
-    assert r.status_code == 200
+    assert r.status_code == 200 and r.json()["note_moved"] is True
     assert not (backlog / "done" / "shipped-item.md").exists()
+    trash = todelete_dir / "backlog-deleted"
+    items = [p for p in trash.glob("shipped-item-*.md")
+             if not p.name.endswith(".review-note.md")]
+    assert len(items) == 1
+    assert len(list(trash.glob("shipped-item-*.review-note.md"))) == 1
 
 
 def test_actions_404_on_missing_files(client, backlog):
