@@ -8,7 +8,8 @@ Two requirements pull in opposite directions:
   * a source repo must not track build output (it churns on every build, it
     resists review, and it goes stale silently);
   * a one-click App Store install must not require Node on the target machine,
-    and the installer never runs a build.
+    and the installer build step must stay a no-op (root package.json marker,
+    docs/DECISIONS.md #14).
 
 So `main` stays clean (``frontend/dist`` and ``ui/dist`` are gitignored) and the
 built bundles live on a dedicated `release` branch, which is what the app
