@@ -2,6 +2,13 @@
 
 > Session log of architectural decisions. Newest first.
 
+## 2026-09-25 - Decisions from the App Store install
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 14 | **The repo root carries an empty `package.json` + `package-lock.json` (no dependencies, no `build` script)** | KiroCrew's installer build step checks `package.json` first and otherwise treats `requirements.txt`/`pyproject.toml` as a Python build, which the desktop app refuses (its interpreter lives in the signed bundle). The step is redundant for this app: at backend start KiroCrew already installs `requirements.txt` with `pip --target` into `data/.kirocrew-deps`, which works in the desktop app. The marker makes the build step a no-op `npm install`. `requirements.txt` stays - without it the backend has no FastAPI/uvicorn. Remove the marker once KiroCrew skips the build step for apps that only declare runtime requirements |
+| 15 | **Troubleshooting knowledge ships as an app skill (`skills/agent-dashboard-troubleshooting`)** | A user who installs from the App Store never clones the repo, so `agents/dashboard-support` is not registered for them. KiroCrew links an app's declared skills into `~/.kiro/crew/skills/` on enable, and its diagnose chat sees them through skill triggers - so the install paths, log location and known failures reach whoever debugs the app |
+
 ## 2026-08-12 - Decisions born from real bugs
 
 | # | Decision | Rationale |
