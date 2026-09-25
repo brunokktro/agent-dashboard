@@ -32,6 +32,9 @@
     "docs/img/console.png",
     "docs/img/pipe.png"
   ],
+  "skills": [
+    "skills/agent-dashboard-troubleshooting"
+  ],
   "permissions": {
     "api": [
       "/apps/agent-dashboard/api"
