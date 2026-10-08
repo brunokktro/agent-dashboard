@@ -62,11 +62,11 @@ class Settings(BaseSettings):
     # ── Derived paths ────────────────────────────────────────────────
     @property
     def db_path(self) -> Path:
-        return self.agents_dir / "runs.db"
+        return self.agents_dir.parent / "agents-state" / "runs.db"
 
     @property
     def log_dir(self) -> Path:
-        return self.agents_dir / "logs"
+        return self.agents_dir.parent / "agents-state" / "logs"
 
     @property
     def schedule_path(self) -> Path:
@@ -74,11 +74,11 @@ class Settings(BaseSettings):
 
     @property
     def lock_dir(self) -> Path:
-        return self.agents_dir / "locks"
+        return self.agents_dir.parent / "agents-state" / "locks"
 
     @property
     def queue_dir(self) -> Path:
-        return self.agents_dir / "queue"
+        return self.agents_dir.parent / "agents-state" / "queue"
 
     @property
     def scripts_dir(self) -> Path:

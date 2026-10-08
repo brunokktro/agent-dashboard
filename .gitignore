@@ -13,3 +13,5 @@ ui/dist/
 # local-only notes (never published: reference local paths / internal ecosystem)
 *.local.md
 demo/demo-agents/
+# local investigation residue; never part of a source or release tree
+.probe/

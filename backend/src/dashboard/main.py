@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -9,11 +11,13 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
-from .api import router
+from .a2a import router as a2a_router
+from .api import reap_children, router
 from .config import get_settings
 from .events import router as events_router
 from .observability import router as obs_router
 from .pipe import router as pipe_router
+from .pizza import router as pizza_router
 from .streams import router as streams_router
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
@@ -37,13 +41,42 @@ class _HashedAssets(StaticFiles):
         return resp
 
 
+_REAP_INTERVAL_SEC = 30.0
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Reap finished trigger children while the app is up.
+
+    api._spawn_detached already reaps on every new spawn, which alone would
+    leave the LAST run's child parked as a zombie until the user clicks Run
+    again - on a long-lived server (this one had 3d of uptime) that is exactly
+    the <defunct> that shows up in Activity Monitor. This task closes the
+    window: a runner that exits now is collected within the interval.
+    """
+    async def loop() -> None:
+        while True:
+            await asyncio.sleep(_REAP_INTERVAL_SEC)
+            reap_children()
+
+    task = asyncio.create_task(loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Agent Dashboard", version=__version__)
+    app = FastAPI(title="Agent Dashboard", version=__version__, lifespan=_lifespan)
     app.include_router(router)
     app.include_router(streams_router)
     app.include_router(obs_router)
     app.include_router(events_router)
     app.include_router(pipe_router)
+    app.include_router(a2a_router)
+    app.include_router(pizza_router)
 
     # A page this dashboard no longer serves forwards to its new home. This is
     # middleware, not a route, for a concrete reason: the SPA fallback is already

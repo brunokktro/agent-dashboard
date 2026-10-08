@@ -31,7 +31,10 @@ export default function TerminalPane({
     term.open(hostRef.current)
     fit.fit()
     // refit after layout settles (grid panes size late)
-    setTimeout(() => { fit.fit(); ws.readyState === WebSocket.OPEN && ws.send(`\x01${term.cols},${term.rows}`) }, 300)
+    setTimeout(() => {
+      fit.fit()
+      if (ws.readyState === WebSocket.OPEN) ws.send(`\x01${term.cols},${term.rows}`)
+    }, 300)
 
     const proto = location.protocol === "https:" ? "wss" : "ws"
     const qs = sessionId ? `?session=${encodeURIComponent(sessionId)}` : ""
@@ -85,7 +88,7 @@ export default function TerminalPane({
       ws.close()
       term.dispose()
     }
-  }, [initialCommand, broadcastChannel])
+  }, [initialCommand, broadcastChannel, sessionId])
 
   return (
     <div

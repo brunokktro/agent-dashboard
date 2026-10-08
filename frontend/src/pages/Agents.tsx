@@ -9,10 +9,12 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { StatusBadge, TrendIcon, scoreColor } from "@/components/shared"
+import { usePageTitle } from "@/lib/title"
 
 type Facet = "all" | "running" | "scheduled" | "chat"
 
 export default function AgentsPage() {
+  usePageTitle("Agents")
   const navigate = useNavigate()
   const { data } = useQuery({ queryKey: ["overview"], queryFn: api.overview })
   const [search, setSearch] = useState("")

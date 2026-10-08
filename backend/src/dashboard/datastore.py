@@ -123,16 +123,17 @@ class Datastore:
     # ── runs.db ─────────────────────────────────────────────────────
     @contextlib.contextmanager
     def db(self):
-        first_time = not self.s.db_path.exists()
         self.s.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.s.db_path)
         conn.row_factory = sqlite3.Row
-        if first_time:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                "job_id TEXT, started_at TEXT, duration_sec INTEGER, status TEXT, "
-                "exit_code INTEGER, log_path TEXT)")
-            conn.commit()
+        # Run the schema create on EVERY open, idempotently: an empty or
+        # truncated db file already exists, so a first_time-only guard would
+        # skip the CREATE and leave every read throwing "no such table: runs".
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "job_id TEXT, started_at TEXT, duration_sec INTEGER, status TEXT, "
+            "exit_code INTEGER, log_path TEXT)")
+        conn.commit()
         try:
             yield conn
         finally:

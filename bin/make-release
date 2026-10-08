@@ -32,8 +32,11 @@ import argparse
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -55,6 +58,77 @@ def token() -> str:
         sys.exit("no GitHub token: set GITHUB_TOKEN")
 
 
+def stage_and_scan(head: str, files: list[Path], output: Path | None) -> None:
+    """Mount the exact release tree, scan it, and optionally preserve a copy."""
+    scanner = REPO_DIR / "bin" / "scan-release"
+    if not scanner.is_file():
+        sys.exit("missing release scanner: bin/scan-release")
+    if output is not None and output.exists():
+        sys.exit(f"refusing to replace existing release output: {output}")
+
+    work_parent = os.environ.get("RELEASE_WORK_DIR")
+    if work_parent:
+        Path(work_parent).mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="agent-dashboard-release-",
+        dir=work_parent,
+    ) as tmp:
+        work = Path(tmp)
+        source_tar = work / "source.tar"
+        stage = work / "tree"
+        stage.mkdir()
+        subprocess.run(
+            ["git", "-C", str(REPO_DIR), "archive", "--format=tar", "-o", str(source_tar), head],
+            check=True,
+        )
+        with tarfile.open(source_tar, "r") as archive:
+            archive.extractall(stage, filter="data")
+
+        for source in files:
+            relative = source.relative_to(REPO_DIR)
+            destination = stage / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+        manifest = json.loads((stage / "app.json").read_text(encoding="utf-8"))
+        required = (
+            stage / manifest["backend"]["entryPoint"],
+            stage / "ui" / manifest["ui"]["entry"],
+            stage / "frontend" / "dist" / "index.html",
+        )
+        missing = [str(path.relative_to(stage)) for path in required if not path.is_file()]
+        if missing:
+            sys.exit(f"release tree missing required entries: {', '.join(missing)}")
+
+        final_tar = work / "agent-dashboard-release.tar"
+        with tarfile.open(final_tar, "w") as archive:
+            archive.add(stage, arcname=".")
+
+        control = subprocess.run([sys.executable, str(scanner), "--self-test"])
+        if control.returncode != 0:
+            sys.exit("release scanner positive control failed; no remote write attempted")
+        scan = [
+            sys.executable,
+            str(scanner),
+            "--path",
+            str(stage),
+            "--archive",
+            str(final_tar),
+        ]
+        deny_file = os.environ.get("RELEASE_DENY_TERMS_FILE")
+        if deny_file:
+            scan.extend(["--deny-file", deny_file])
+        result = subprocess.run(scan)
+        if result.returncode != 0:
+            sys.exit("release scan failed; no remote write attempted")
+        print(f"release tree: validated {sum(1 for p in stage.rglob('*') if p.is_file())} files")
+
+        if output is not None:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(stage, output)
+            print(f"release tree: preserved at {output}")
+
+
 def git(*a: str) -> str:
     return subprocess.check_output(["git", "-C", str(REPO_DIR), *a], text=True).strip()
 
@@ -71,6 +145,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--output", type=Path, help="preserve the validated release tree here")
     a = ap.parse_args()
 
     if not a.no_build:
@@ -94,6 +169,7 @@ def main() -> int:
     head = git("rev-parse", "HEAD")
     slug = origin_slug()
     print(f"repo {slug} | main HEAD {head[:8]} | {len(files)} bundle files")
+    stage_and_scan(head, files, a.output.resolve() if a.output else None)
     if a.dry_run:
         for p in sorted(files):
             print("  would publish", p.relative_to(REPO_DIR))

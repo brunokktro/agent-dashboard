@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StatCard, StatusBadge, TrendIcon, scoreColor } from "@/components/shared"
+import { usePageTitle } from "@/lib/title"
 
 interface Diagnosis {
   run: { job_id: string; exit_code: number | null; duration_sec: number | null; started_at: string }
@@ -23,6 +24,7 @@ interface Diagnosis {
 }
 
 export default function OverviewPage() {
+  usePageTitle("Overview")
   const [diag, setDiag] = useState<Diagnosis | null>(null)
   const [diagLoading, setDiagLoading] = useState(false)
   const diagnose = async (id: number) => {

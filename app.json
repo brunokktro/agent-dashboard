@@ -1,6 +1,6 @@
 {
   "name": "agent-dashboard",
-  "version": "3.2.7",
+  "version": "3.3.0",
   "displayName": "Agent Dashboard",
   "description": "Local-first observability for your AI agent fleet: run history and health scores, day-by-hour heatmaps, P50/P95/P99 durations, failure diagnosis with probable-cause hints, work queue, scheduler view, live logs and real terminals. Observes the ecosystem it is pointed at (runs.db, queue/, schedule.json) and never fabricates it.",
   "author": "brunokktro",
@@ -15,7 +15,9 @@
   "highlights": [
     "Run history with health scores, trends and a day-by-hour failure heatmap",
     "Failure diagnosis: isolates the failing run's own log window and suggests probable causes",
-    "Work queue with retry/cancel, scheduler view, and a backlog kanban with drag-and-drop",
+    "Work queue with priority-aware execution plus retry/cancel and a reviewable backlog kanban",
+    "A2A observability for delivery queue, handoffs, discoveries, drift and worker health",
+    "Pizza Bot Inbox for durable long-running conversations and actions waiting for a decision",
     "Real PTY terminals and a pipe mode to drive agents, with durable sessions",
     "Observes any ecosystem via DASHBOARD_AGENTS_DIR - ships a universal record-run adapter",
     "Read-mostly by design: the only writes are queue transitions, alert acks and backlog decisions"

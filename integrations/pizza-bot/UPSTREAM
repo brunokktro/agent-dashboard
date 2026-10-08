@@ -1,0 +1,5 @@
+repo="https://github.com/pizza-bot-app/pizza-bot.git"
+base="2c5f0fd53ec65e70a5337405aa3277476a582b97"
+base_short="2c5f0fd"
+base_subject="feat: add configurable tool call limit (#87)"
+license="Apache-2.0"

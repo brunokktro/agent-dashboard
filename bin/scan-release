@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Scan a mounted release tree or archive for private and secret-shaped data.
+
+The scanner reports only the rule, file, and line. It never prints the matched
+value. Use --deny-term/--deny-file for customer or environment-specific names
+that cannot safely live in a public repository.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+import tarfile
+import tempfile
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Iterable
+
+MAX_FILE_BYTES = 10 * 1024 * 1024
+BINARY_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2", ".pyc"}
+
+
+@dataclass(frozen=True)
+class Rule:
+    name: str
+    pattern: re.Pattern[str]
+
+
+BASE_RULES = (
+    Rule("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
+    Rule("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
+    Rule("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
+    Rule("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    Rule("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
+    Rule("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
+    Rule("absolute_user_path", re.compile(r"(?:/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|[A-Za-z]:\\\\Users\\\\[A-Za-z0-9._-]+)")),
+    Rule("aws_arn", re.compile(r"\barn:(?:aws|aws-us-gov|aws-cn):[A-Za-z0-9_./:=+@-]+")),
+    Rule("aws_account_id", re.compile(r"\b(?:aws[ _-]?account|account[ _-]?id|account)\D{0,24}\d{12}\b", re.I)),
+    Rule("slack_id", re.compile(r"\b[CDUW](?=[A-Z0-9]{8,}\b)(?=[A-Z0-9]*\d)[A-Z0-9]{8,}\b")),
+    Rule("asana_gid", re.compile(r"\b(?:asana[ _-]?gid|task[ _-]?gid|gid)\D{0,24}\d{16,20}\b", re.I)),
+    Rule("salesforce_id", re.compile(r"\b(?:001|006)[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?\b")),
+    Rule("internal_domain", re.compile(r"\b[A-Za-z0-9.-]+\.(?:amazon\.com|amazon\.dev|aws\.dev|corp)\b", re.I)),
+)
+
+# Split literals keep the scanner from flagging its own source.
+PRIVATE_MARKERS = (
+    "lop" + "bruno",
+    "com." + "lop" + "bruno",
+    "default-" + "virginia",
+    "agent-" + "pm",
+    "standards-" + "agent",
+    "devex-" + "agent",
+    "fariseu-" + "qa",
+    "guardian-" + "reviewer",
+    "PC" + "SR",
+)
+
+
+def rules(deny_terms: Iterable[str] = ()) -> tuple[Rule, ...]:
+    dynamic = [
+        Rule("private_marker", re.compile(re.escape(value), re.I))
+        for value in PRIVATE_MARKERS
+    ]
+    dynamic.extend(
+        Rule(
+            "private_term",
+            re.compile(rf"(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])", re.I),
+        )
+        for value in deny_terms
+        if value.strip()
+    )
+    return BASE_RULES + tuple(dynamic)
+
+
+def scan_bytes(label: str, data: bytes, active_rules: tuple[Rule, ...]) -> list[tuple[str, str, int]]:
+    member_name = label.rsplit(":", 1)[-1]
+    if Path(member_name).suffix.lower() in BINARY_SUFFIXES:
+        return []
+    if len(data) > MAX_FILE_BYTES:
+        return [("oversized_unscanned_file", label, 0)]
+    text = data.decode("utf-8", errors="ignore")
+    findings: list[tuple[str, str, int]] = []
+    for line_no, line in enumerate(text.splitlines() or [text], 1):
+        for rule in active_rules:
+            if rule.pattern.search(line):
+                findings.append((rule.name, label, line_no))
+    return findings
+
+
+def scan_tree(root: Path, active_rules: tuple[Rule, ...]) -> list[tuple[str, str, int]]:
+    findings: list[tuple[str, str, int]] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            findings.extend(scan_bytes(str(path.relative_to(root)), str(path.readlink()).encode(), active_rules))
+        elif path.is_file():
+            findings.extend(scan_bytes(str(path.relative_to(root)), path.read_bytes(), active_rules))
+    return findings
+
+
+def safe_member(name: str) -> bool:
+    member = PurePosixPath(name)
+    return not member.is_absolute() and ".." not in member.parts
+
+
+def scan_archive(path: Path, active_rules: tuple[Rule, ...]) -> list[tuple[str, str, int]]:
+    findings: list[tuple[str, str, int]] = []
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                if not safe_member(info.filename):
+                    findings.append(("unsafe_archive_path", info.filename, 0))
+                    continue
+                findings.extend(scan_bytes(f"{path.name}:{info.filename}", archive.read(info), active_rules))
+        return findings
+    try:
+        with tarfile.open(path, "r:*") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                if not safe_member(member.name):
+                    findings.append(("unsafe_archive_path", member.name, 0))
+                    continue
+                extracted = archive.extractfile(member)
+                if extracted is not None:
+                    findings.extend(scan_bytes(f"{path.name}:{member.name}", extracted.read(), active_rules))
+    except tarfile.ReadError as exc:
+        raise SystemExit(f"unsupported archive {path}: {exc}") from exc
+    return findings
+
+
+def positive_control() -> None:
+    synthetic_term = "Example" + " Confidential Customer"
+    samples = {
+        "aws_access_key": "AKIA" + "A" * 16,
+        "github_token": "gh" + "p_" + "A" * 24,
+        "slack_token": "xox" + "b-" + "A" * 24,
+        "private_key": "-----BEGIN " + "PRIVATE KEY-----",
+        "jwt": "eyJ" + "A" * 24 + "." + "B" * 12 + "." + "C" * 12,
+        "email": "private" + "@" + "example.com",
+        "absolute_user_path": "/Users/" + "private-user/project",
+        "aws_arn": "arn:" + "aws:iam::" + "123456" + "789012:role/private",
+        "aws_account_id": "aws account: " + "123456" + "789012",
+        "slack_id": "U" + "ABC123456",
+        "asana_gid": "asana gid: " + "12345678" + "90123456",
+        "salesforce_id": "001" + "A" * 12,
+        "internal_domain": "service." + "amazon.dev",
+        "private_marker": "agent" + "-pm",
+        "private_term": synthetic_term,
+    }
+    active = rules([synthetic_term])
+    with tempfile.TemporaryDirectory(prefix="agent-dashboard-scan-control-") as tmp:
+        root = Path(tmp)
+        for name, value in samples.items():
+            (root / f"{name}.txt").write_text(value, encoding="utf-8")
+        observed = {finding[0] for finding in scan_tree(root, active)}
+    missing = sorted(set(samples) - observed)
+    if missing:
+        raise SystemExit(f"positive control failed; undetected classes: {', '.join(missing)}")
+    print(f"positive control: {len(samples)} classes detected")
+
+
+def read_deny_terms(args: argparse.Namespace) -> list[str]:
+    values = list(args.deny_term)
+    for path in args.deny_file:
+        values.extend(
+            line.strip() for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+    return values
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", action="append", type=Path, default=[])
+    parser.add_argument("--archive", action="append", type=Path, default=[])
+    parser.add_argument("--deny-term", action="append", default=[])
+    parser.add_argument("--deny-file", action="append", type=Path, default=[])
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+
+    if args.self_test:
+        positive_control()
+    if not args.path and not args.archive:
+        return 0 if args.self_test else parser.error("provide --path, --archive, or --self-test")
+
+    active = rules(read_deny_terms(args))
+    findings: list[tuple[str, str, int]] = []
+    for root in args.path:
+        if not root.is_dir():
+            raise SystemExit(f"scan path is not a directory: {root}")
+        findings.extend(scan_tree(root, active))
+    for archive in args.archive:
+        if not archive.is_file():
+            raise SystemExit(f"archive does not exist: {archive}")
+        findings.extend(scan_archive(archive, active))
+
+    if findings:
+        for name, label, line in findings:
+            where = f"{label}:{line}" if line else label
+            print(f"FINDING {name} {where}")
+        print(f"release scan: FAILED ({len(findings)} findings)")
+        return 1
+    print("release scan: CLEAN")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

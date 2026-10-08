@@ -4,8 +4,10 @@ import { api, fmtDuration, relativeTime } from "@/lib/api"
 import { Card, CardContent } from "@/components/ui/card"
 import { StatusBadge, TrendIcon, scoreColor } from "@/components/shared"
 import { RunHeatmap } from "@/components/observability"
+import { usePageTitle } from "@/lib/title"
 
 export default function HealthPage() {
+  usePageTitle("Health")
   const { data } = useQuery({ queryKey: ["health"], queryFn: api.health })
   if (!data) return null
 

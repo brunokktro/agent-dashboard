@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react"
 import {
-  Activity, Bot, GitBranch, HeartPulse, Keyboard, ListTodo, Rocket,
-  ScrollText, Settings2, SquareTerminal, Stethoscope, Zap,
+  Activity, Bot, GitBranch, HeartPulse, ListTodo, Mail, Network, Rocket,
+  ScrollText, Settings2, SquareTerminal, Zap,
 } from "lucide-react"
+import { usePageTitle } from "@/lib/title"
 
 interface Sub { id: string; title: string; body: React.ReactNode; img?: string }
 interface Section { id: string; title: string; icon: React.ElementType; subs: Sub[] }
@@ -136,7 +137,7 @@ const SECTIONS: Section[] = [
           <UL items={[
             "This dashboard is also a KiroCrew app: install it from the App Store registry (or from a local clone) and it appears in the sidebar, terminals included.",
             <>One-click by design: the built UI ships in the repo, so the install needs no Node on
-            your machine; the backend spawns on an automatic port with a <K>/health</K> check.</>,
+            your machine; the backend spawns on an automatic port with a <K>/healthz</K> check.</>,
             "The sidebar page embeds the dashboard same-origin, which keeps the WebSocket terminals and live log streams working.",
           ]} />
         ),
@@ -219,6 +220,7 @@ const SECTIONS: Section[] = [
             "Click any card for the full detail panel (complete input, result/error, timestamps, actions).",
             "Failed cards preview the error inline; hover shows quick Retry/Cancel.",
             "Enqueue: pick the agent from a dropdown, describe the task, set priority - done.",
+            "Pending executes by priority (high, medium, low), then FIFO inside each priority. The board stays newest-first for scanning; high and low cards carry text badges, while the default medium stays quiet.",
           ]} />
         ),
       },
@@ -228,7 +230,7 @@ const SECTIONS: Section[] = [
           <UL items={[
             "Click any backlog or review-note card to open the reader: side table of contents with scroll-spy, J/K (or arrows) to move between items, and the file path one click away.",
             "Review notes carry a decision bar: Approve flips the item's autonomy to auto (applied on the agent's next run), Discuss saves your feedback into the note for regeneration, Reject stops it.",
-            "Backlog items expose the autonomy switch (auto / review / blocked) and a soft Delete - items move to backlog/deleted/, nothing is destroyed.",
+            "Backlog items expose the autonomy switch (auto / review / blocked) and a soft Delete - items move to Downloads/ToDelete/backlog-deleted/, nothing is destroyed.",
             "Drag and drop cards in the 'Active backlog' column to reorder them - the order persists in each file's frontmatter and survives a refresh.",
             "Running and Failed columns appear when an item carries state: running or state: failed in its frontmatter - written by whoever executes it, through POST /api/backlog/state. The item never moves on disk, so its note, order and history stay attached.",
             "The full loop: backlog-reviewer writes the note, you decide here (Approve flips the item to auto), an executor picks it up and marks it running, then done or failed. The agent proposes, the human approves - always in that order.",
@@ -303,10 +305,65 @@ const SECTIONS: Section[] = [
             running, with elapsed timer), output STREAMS live (~1s latency) so you watch the
             agent working, and each step shows exactly what it received from the previous one.
             Jobs survive page refreshes and even backend restarts (persisted server-side).
-            Great for review chains ("devex-agent builds it → guardian-reviewer audits it").</P>
+            Great for review chains ("builder-agent creates it, then review-agent audits it").</P>
             <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
               <GitBranch className="size-3.5" /> Console → Pipe mode button
             </div>
+          </>
+        ),
+      },
+    ],
+  },
+  {
+    id: "a2a", title: "A2A", icon: Network,
+    subs: [
+      {
+        id: "a2a-observability", title: "Inter-agent delivery, from disk",
+        body: (
+          <>
+            <P>The A2A tab reads the same canonical handoff and discovery state that agents use.
+            It does not maintain a second parser or invent delivery status.</P>
+            <UL items={[
+              "Queue cards separate A2A items from the whole shared queue and show pending, running, done and failed counts.",
+              "Recent handoffs show sender, recipient, topic, status and age. Discoveries show who should consume each announcement and which consumers are behind their watermark.",
+              "Drift means an open handoff exists in the audit log but no matching delivery item exists in the queue. That request cannot run until the transport state is repaired.",
+              "Worker health shows the last delivery cycle, how many items it started and the latest worker error. A later healthy cycle clears the warning without erasing the history.",
+              "Every status uses an icon and a word. Color is supplementary, so stale, failed and pending remain distinguishable without color.",
+            ]} />
+          </>
+        ),
+      },
+    ],
+  },
+  {
+    id: "pizza", title: "Pizza Inbox", icon: Mail,
+    subs: [
+      {
+        id: "pizza-tab", title: "A mail client for long-running agents",
+        body: (
+          <>
+            <P>The Pizza tab embeds a local Pizza Bot sidecar (<code>127.0.0.1:7782</code>) and
+            works like email, not chat: your agents take minutes or hours, so nobody sits on an
+            open thread. Address a message to an agent with the <b>To</b> field, hit send, and
+            close the lid.</P>
+            <UL items={[
+              <><b>Send → Sent.</b> The conversation files itself under the <b>Sent</b> folder and
+              the pane closes. The <b>Waiting</b> filter counts what is still out, and each badge says
+              where the letter is: <i>Queued for X · 2 ahead</i> while it waits its turn, then
+              <i>X is working · 3m</i> once the agent picked it up.</>,
+              <><b>Reply → Inbox.</b> When the agent answers, the thread returns to the inbox as
+              unread with the whole exchange threaded like a mail conversation. A reply that needs
+              your input lands in <b>Action Required</b> instead.</>,
+              <><b>Reply again → it leaves again.</b> Opening the thread preselects the agent in
+              the To field; sending re-files it under Sent and the cycle repeats.</>,
+              <>Multi-select: the checkbox button next to the filters turns on selection mode for
+              bulk delete.</>,
+            ]} />
+            <P>Messages <b>to the Pizza Bot itself</b> are a normal streaming chat - mail semantics
+            apply only to agent handoffs. If the tab shows a banner instead of the inbox, the
+            sidecar is not running: see <code>docs/pizza.md</code> for the service, and{" "}
+            <code>integrations/pizza-bot/</code> for the bridge patch a fresh Pizza Bot checkout
+            needs before agents can reach it.</P>
           </>
         ),
       },
@@ -403,10 +460,8 @@ const SECTIONS: Section[] = [
   },
 ]
 
-// icon needed by section header render
-void Stethoscope, void Keyboard
-
 export default function HelpPage() {
+  usePageTitle("Help")
   const [active, setActive] = useState(SECTIONS[0].id)
 
   useEffect(() => {

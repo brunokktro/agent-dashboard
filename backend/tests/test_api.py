@@ -192,9 +192,9 @@ def test_diagnose_uses_configured_extra_hints(ecosystem):
     from dashboard.config import Settings, get_settings
     from dashboard.main import create_app
 
-    log = ecosystem.agents_dir / "logs" / "alpha-agent-morning.log"
+    log = ecosystem.log_dir / "alpha-agent-morning.log"
     log.write_text("[2026-08-06 10:00:00] ERROR: corp-sso session expired\n")
-    conn = sqlite3.connect(ecosystem.agents_dir / "runs.db")
+    conn = sqlite3.connect(ecosystem.db_path)
     conn.execute(
         "INSERT INTO runs (job_id, started_at, duration_sec, status, exit_code, log_path) "
         "VALUES (?,?,?,?,?,?)",

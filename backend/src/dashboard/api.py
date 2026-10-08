@@ -8,6 +8,7 @@ import os
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Response
@@ -23,6 +24,39 @@ def _store(settings: Annotated[Settings, Depends(get_settings)]) -> Datastore:
     return Datastore(settings)
 
 Store = Annotated[Datastore, Depends(_store)]
+
+
+# --- fire-and-forget children ------------------------------------------------
+# The trigger endpoints below launch a runner and return immediately, so nobody
+# ever waits on the child. Its exit status then sits in the process table as a
+# zombie for the whole lifetime of this uvicorn process - measured on the live
+# box: one <defunct> per manual trigger, still parked after 1d14h.
+#
+# Setting SIGCHLD to SIG_IGN would let the kernel reap them in one line, but it
+# is NOT an option here: api_supervisor() below calls subprocess.run and
+# subprocess.check_output in this same process, and those would start failing
+# with ECHILD. So keep a reference and poll() it instead - Popen.poll() is
+# waitpid(WNOHANG), which IS the reap.
+_children: set[subprocess.Popen] = set()
+
+
+def reap_children() -> int:
+    """Collect every finished fire-and-forget child. Returns how many were reaped."""
+    done = [p for p in _children if p.poll() is not None]
+    _children.difference_update(done)
+    return len(done)
+
+
+def _spawn_detached(cmd: list[str], **kwargs) -> subprocess.Popen:
+    """Launch a runner in its own session and register it for reaping.
+
+    Reaps first: back-to-back triggers then clean up after each other even if
+    the periodic reaper in main.py is not running (tests, embedded use).
+    """
+    reap_children()
+    proc = subprocess.Popen(cmd, start_new_session=True, **kwargs)
+    _children.add(proc)
+    return proc
 
 
 def _runner_capabilities(settings: Settings) -> dict[str, bool]:
@@ -350,9 +384,9 @@ def trigger_job(job_id: str, store: Store, settings: Annotated[Settings, Depends
             f"runner script not found: {runner}. Scheduled jobs are executed by "
             "your ecosystem's run-scheduled.sh (this dashboard only observes); "
             "see README 'Runner scripts' for the expected contract.")
-    subprocess.Popen(
+    _spawn_detached(
         [str(runner), job["id"], job["script"], str(job.get("timeout_sec", 1800))],
-        start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return {"ok": True, "agent": store.resolve_agent(job["id"])}
 
 
@@ -376,9 +410,14 @@ def trigger_agent(name: str, store: Store, settings: Annotated[Settings, Depends
     # scaffolded runner consumes as ${AGENT_CLI_NAME:-$AGENT}. Custom runners
     # that ignore it keep working unchanged.
     env = {**os.environ, "AGENT_CLI_NAME": agents[name]["cli_name"]}
+    # The log dir is derived state (agents-state/logs) and may not exist yet on a
+    # fresh tree - opening the file blind raises FileNotFoundError and surfaces
+    # as an opaque 500, the same failure mode the runner-missing guard above
+    # exists to prevent.
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w") as lf:
-        subprocess.Popen([str(runner), name, "run", "--no-interactive"],
-                         start_new_session=True, stdout=lf, stderr=lf, env=env)
+        _spawn_detached([str(runner), name, "run", "--no-interactive"],
+                        stdout=lf, stderr=lf, env=env)
     return {"ok": True, "log": log_path.name}
 
 
@@ -535,7 +574,7 @@ def api_backlog(settings: Annotated[Settings, Depends(get_settings)]):
     unrecognised value keeps the item on the board rather than hiding it.
     """
     import re as _re
-    base = settings.agents_dir / "backlog"
+    base = _backlog_dir(settings)
     out = {"active": [], "running": [], "failed": [], "done": [], "review_notes": []}
     for bucket, d in (("active", base), ("done", base / "done"),
                       ("review_notes", base / "review-notes")):
@@ -602,7 +641,7 @@ def backlog_state(body: StateBody,
     value = body.state.strip().lower()
     if value not in BACKLOG_STATES:
         raise HTTPException(422, f"invalid state (use {'/'.join(BACKLOG_STATES)})")
-    path = settings.agents_dir / "backlog" / _safe_md(body.file)
+    path = _backlog_dir(settings) / _safe_md(body.file)
     if not path.is_file():
         raise HTTPException(404, "backlog item not found")
     if value == "active":
@@ -668,6 +707,13 @@ class DeleteBody(BacklogFileBody):
     bucket: str = "active"
 
 
+def _backlog_dir(settings: Settings) -> Path:
+    """Backlog vive em agents-state/backlog desde 01/10/2026, fora da arvore que o engine v3
+    do kiro-cli varre como agents. Fallback para agents/backlog: testes e rollback."""
+    new = settings.agents_dir.parent / "agents-state" / "backlog"
+    return new if new.is_dir() else settings.agents_dir / "backlog"
+
+
 def _safe_md(file: str) -> str:
     """Reject path traversal; backlog files are bare *.md names."""
     from pathlib import Path as _P
@@ -731,7 +777,7 @@ def backlog_autonomy(body: AutonomyBody,
     value = body.autonomy.strip().lower()
     if value not in ("auto", "review", "blocked"):
         raise HTTPException(422, "invalid autonomy (use auto/review/blocked)")
-    path = settings.agents_dir / "backlog" / _safe_md(body.file)
+    path = _backlog_dir(settings) / _safe_md(body.file)
     if not path.is_file():
         raise HTTPException(404, "backlog item not found")
     _set_frontmatter_field(path, "autonomy", value)
@@ -742,7 +788,7 @@ def backlog_autonomy(body: AutonomyBody,
 def review_note_approve(body: BacklogFileBody,
                         settings: Annotated[Settings, Depends(get_settings)]):
     """Approve: flip the BACKLOG ITEM's autonomy to auto. Next meta-agent run applies."""
-    path = settings.agents_dir / "backlog" / _safe_md(body.file)
+    path = _backlog_dir(settings) / _safe_md(body.file)
     if not path.is_file():
         raise HTTPException(404, "backlog item not found")
     _set_frontmatter_field(path, "autonomy", "auto")
@@ -755,7 +801,7 @@ def review_note_discuss(body: DiscussBody,
     """Send feedback: note status -> discussing + Human feedback section."""
     if not body.feedback.strip():
         raise HTTPException(422, "feedback is required")
-    path = settings.agents_dir / "backlog" / "review-notes" / _safe_md(body.file)
+    path = _backlog_dir(settings) / "review-notes" / _safe_md(body.file)
     if not path.is_file():
         raise HTTPException(404, "review note not found")
     _set_frontmatter_field(path, "status", "discussing")
@@ -767,7 +813,7 @@ def review_note_discuss(body: DiscussBody,
 def review_note_reject(body: RejectBody,
                        settings: Annotated[Settings, Depends(get_settings)]):
     """Reject: note status -> rejected. The agent will NOT regenerate it."""
-    path = settings.agents_dir / "backlog" / "review-notes" / _safe_md(body.file)
+    path = _backlog_dir(settings) / "review-notes" / _safe_md(body.file)
     if not path.is_file():
         raise HTTPException(404, "review note not found")
     _set_frontmatter_field(path, "status", "rejected")
@@ -779,25 +825,27 @@ def review_note_reject(body: RejectBody,
 @router.post("/api/backlog/delete")
 def backlog_delete(body: DeleteBody,
                    settings: Annotated[Settings, Depends(get_settings)]):
-    """Soft-delete: move the item (and its review note, if any) to deleted/ folders."""
+    """Move a discarded item to the centralized user-owned ToDelete folder."""
     file = _safe_md(body.file)
-    base = settings.agents_dir / "backlog"
+    base = _backlog_dir(settings)
     src = (base / "done" / file) if body.bucket == "done" else (base / file)
     if not src.is_file():
         raise HTTPException(404, "backlog item not found")
     ts = datetime.now().strftime("%Y%m%dT%H%M%S")
     stem = file[:-3]
-    deleted = base / "deleted"
-    deleted.mkdir(parents=True, exist_ok=True)
-    src.rename(deleted / f"{stem}-{ts}.md")
-    note = base / "review-notes" / file
+    trash = Path(os.environ.get(
+        "DASHBOARD_TODELETE_DIR", str(Path.home() / "Downloads" / "ToDelete")
+    )) / "backlog-deleted"
+    trash.mkdir(parents=True, exist_ok=True)
+    src.rename(trash / f"{stem}-{ts}.md")
+    note_base = base / "review-notes"
+    note = (note_base / "applied" / file) if body.bucket == "done" else (note_base / file)
     note_moved = False
     if note.is_file():
-        note_deleted = base / "review-notes" / "deleted"
-        note_deleted.mkdir(parents=True, exist_ok=True)
-        note.rename(note_deleted / f"{stem}-{ts}.md")
+        note.rename(trash / f"{stem}-{ts}.review-note.md")
         note_moved = True
-    return {"ok": True, "note_moved": note_moved}
+    return {"ok": True, "note_moved": note_moved,
+            "destination": "Downloads/ToDelete/backlog-deleted"}
 
 
 class ReorderBody(BaseModel):
@@ -814,7 +862,7 @@ def backlog_reorder(body: ReorderBody,
     """
     if not body.files:
         raise HTTPException(422, "files is required")
-    base = settings.agents_dir / "backlog"
+    base = _backlog_dir(settings)
     safe = [_safe_md(f) for f in body.files]  # reject traversal BEFORE any write
     updated = 0
     for idx, fname in enumerate(safe):
@@ -863,7 +911,7 @@ def backlog_create(payload: dict = Body(...),  # noqa: B008 - explicit reject be
     # slug: the title is free text, so keep only what is safe as a filename and
     # let _safe_md() be the final gate - the same one every other endpoint uses
     slug = _re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60] or "item"
-    base = settings.agents_dir / "backlog"
+    base = _backlog_dir(settings)
     base.mkdir(parents=True, exist_ok=True)
     name, n = f"{slug}.md", 2
     while (base / name).exists():          # never overwrite someone's item
@@ -887,7 +935,7 @@ def backlog_item(bucket: str, file: str,
     dirs = {"active": "", "done": "done", "review_notes": "review-notes"}
     if bucket not in dirs or "/" in file or ".." in file or not file.endswith(".md"):
         raise HTTPException(400, "invalid bucket or file")
-    path = settings.agents_dir / "backlog" / dirs[bucket] / file
+    path = _backlog_dir(settings) / dirs[bucket] / file
     if not path.is_file():
         raise HTTPException(404, "item not found")
     text = path.read_text(errors="replace")

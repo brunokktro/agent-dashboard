@@ -41,11 +41,14 @@ def make_run(conn, job_id: str, status: str = "success", *,
 def ecosystem(tmp_path: Path) -> Settings:
     """Temp agents dir with runs.db, queue, schedule, locks and 2 agent specs."""
     agents = tmp_path / "agents"
-    (agents / "logs").mkdir(parents=True)
-    (agents / "scripts").mkdir()
-    (agents / "locks").mkdir()
+    # Runtime state (runs.db, logs, locks, queue) lives in the agents-state
+    # sibling, matching Settings' derived paths; specs/scripts stay in agents/.
+    state = tmp_path / "agents-state"
+    (agents / "scripts").mkdir(parents=True)
+    (state / "logs").mkdir(parents=True)
+    (state / "locks").mkdir(parents=True)
     for st in ("pending", "running", "done", "failed"):
-        (agents / "queue" / st).mkdir(parents=True)
+        (state / "queue" / st).mkdir(parents=True)
 
     # agent specs (frontmatter with name => detected; without => ignored)
     (agents / "alpha-agent.md").write_text(
@@ -64,7 +67,7 @@ def ecosystem(tmp_path: Path) -> Settings:
         ]}))
 
     # runs.db with the real schema used by the supervisor
-    conn = sqlite3.connect(agents / "runs.db")
+    conn = sqlite3.connect(state / "runs.db")
     conn.execute(
         "CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, "
         "started_at TEXT, duration_sec INTEGER, status TEXT, exit_code INTEGER, log_path TEXT)")
@@ -80,7 +83,7 @@ def ecosystem(tmp_path: Path) -> Settings:
                       ("done", {"completedAt": NOW.isoformat()})):
         item = {"id": f"item-{st}", "agent": "alpha-agent", "input": "do something",
                 "created": (NOW - timedelta(hours=1)).isoformat(), "status": st, **extra}
-        (agents / "queue" / st / f"item-{st}.json").write_text(json.dumps(item))
+        (state / "queue" / st / f"item-{st}.json").write_text(json.dumps(item))
 
     return Settings(agents_dir=agents, supervisor_service="")
 

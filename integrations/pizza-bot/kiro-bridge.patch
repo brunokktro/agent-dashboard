@@ -1,0 +1,3210 @@
+diff --git a/apps/api-server/src/index.ts b/apps/api-server/src/index.ts
+index 3ca5736..57adfd2 100644
+--- a/apps/api-server/src/index.ts
++++ b/apps/api-server/src/index.ts
+@@ -20,6 +20,8 @@ import { settingsRoutes } from "./routes-settings.js";
+ import { lifecycleRoutes } from "./routes-lifecycle.js";
+ import { providerRoutes } from "./routes-providers.js";
+ import { threadRoutes } from "./routes-threads.js";
++import { notificationRoutes } from "./routes-notifications.js";
++import { kiroRoutes } from "./routes-kiro.js";
+ import { pluginRoutes } from "./routes-plugins.js";
+ import { statusRoutes } from "./routes-status.js";
+ import { toolsRoutes } from "./routes-tools.js";
+@@ -223,6 +225,8 @@ export function buildApp(
+   // Literal thread routes and protocol endpoints must precede parameterized
+   // LangGraph routes that could otherwise capture the same paths.
+   app.route("/", threadRoutes(host));
++  app.route("/", notificationRoutes(host));
++  app.route("/", kiroRoutes(host));
+   app.route("/", folderRoutes(host));
+   app.route("/", protocolRoutes(host));
+   app.route("/", langGraphRoutes(host));
+diff --git a/apps/api-server/src/routes-kiro.test.ts b/apps/api-server/src/routes-kiro.test.ts
+new file mode 100644
+index 0000000..2ce3512
+--- /dev/null
++++ b/apps/api-server/src/routes-kiro.test.ts
+@@ -0,0 +1,508 @@
++import { mkdtemp, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type { AgentHost } from "./agent-host.js";
++import { kiroRoutes } from "./routes-kiro.js";
++
++const roots: string[] = [];
++afterEach(async () => {
++  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
++});
++
++async function fixture() {
++  const root = await mkdtemp(join(tmpdir(), "pizza-kiro-route-"));
++  roots.push(root);
++  const agentsDir = join(root, "agents");
++  await import("node:fs/promises").then(({ mkdir }) => mkdir(agentsDir));
++  await writeFile(
++    join(agentsDir, "demo-agent.json"),
++    JSON.stringify({ name: "demo-agent", description: "simple" }),
++  );
++  await writeFile(join(agentsDir, "broken.json"), "{");
++
++  const messages = new Map<string, Array<{ id?: string; content?: unknown }>>();
++  const threads = new Map<string, Record<string, unknown>>();
++  const folders: Array<{ folderId: string; name: string }> = [];
++  const host = {
++    dataRoot: join(root, "data"),
++    whenReady: vi.fn(async () => undefined),
++    agent: {
++      getState: vi.fn(async (threadId: string) => ({
++        values: { messages: messages.get(threadId) ?? [] },
++      })),
++      updateState: vi.fn(async (threadId: string, values: { messages?: Array<{ id?: string }> }) => {
++        messages.set(threadId, [...(messages.get(threadId) ?? []), ...(values.messages ?? [])]);
++        return { checkpointId: "cp", threadId };
++      }),
++    },
++    threadStore: {
++      get: (id: string) => threads.get(id),
++      ensure: (input: Record<string, unknown>) => {
++        const id = String(input.threadId);
++        const row = threads.get(id) ?? { ...input, title: input.title ?? "New conversation" };
++        threads.set(id, row);
++        return row;
++      },
++      update: (id: string, patch: Record<string, unknown>) => {
++        const current = threads.get(id);
++        if (!current) return undefined;
++        const row = { ...current, ...patch };
++        threads.set(id, row);
++        return row;
++      },
++      touch: vi.fn(),
++    },
++    folderStore: {
++      list: () => folders,
++      create: (input: { folderId: string; name: string }) => {
++        folders.push(input);
++        return input;
++      },
++    },
++  } as unknown as AgentHost;
++  const dispatch = vi.fn(async () => "h123456");
++  return { root, agentsDir, host, dispatch, messages, threads, folders };
++}
++
++describe("kiroRoutes", () => {
++  it("lists only valid agent configs", async () => {
++    const f = await fixture();
++    const response = await kiroRoutes(f.host, { agentsDir: f.agentsDir }).request("/kiro/agents");
++    expect(response.status).toBe(200);
++    expect(await response.json()).toEqual({
++      agents: [{ name: "demo-agent", cliName: "demo-agent", description: "simple" }],
++    });
++  });
++
++  it("dispatches an exact target, persists the mapping and appends the request", async () => {
++    const f = await fixture();
++    const response = await kiroRoutes(f.host, {
++      agentsDir: f.agentsDir,
++      dispatch: f.dispatch,
++    }).request("/kiro/handoffs", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ threadId: "t1", target: "demo-agent", message: "validate", requestId: "req-1" }),
++    });
++
++    expect(response.status).toBe(202);
++    expect(f.dispatch).toHaveBeenCalledWith("demo-agent", "validate", "t1", "req-1");
++    expect(f.messages.get("t1")?.[0]?.id).toBe("kiro_request_h123456");
++    const mapping = JSON.parse(
++      await import("node:fs/promises").then(({ readFile }) =>
++        readFile(join(f.root, "data/bridge/pending/h123456.json"), "utf8"),
++      ),
++    );
++    expect(mapping.target).toBe("demo-agent");
++  });
++
++  it("rejects missing targets", async () => {
++    const f = await fixture();
++    const response = await kiroRoutes(f.host, {
++      agentsDir: f.agentsDir,
++      dispatch: f.dispatch,
++    }).request("/kiro/handoffs", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ threadId: "t1", target: "missing", message: "validate" }),
++    });
++    expect(response.status).toBe(404);
++    expect(f.dispatch).not.toHaveBeenCalled();
++  });
++
++  it("deduplicates responses and routes needs-input to Action Required", async () => {
++    const f = await fixture();
++    f.threads.set("t1", { threadId: "t1", title: "request" });
++    const app = kiroRoutes(f.host, { agentsDir: f.agentsDir, dispatch: f.dispatch });
++    const body = {
++      handoffId: "h1",
++      threadId: "t1",
++      target: "demo-agent",
++      status: "needs-input",
++      result: "provide path",
++      needsInput: true,
++    };
++    const first = await app.request("/kiro/responses", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(body),
++    });
++    const second = await app.request("/kiro/responses", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(body),
++    });
++
++    expect(((await first.json()) as { created: boolean }).created).toBe(true);
++    expect(((await second.json()) as { created: boolean }).created).toBe(false);
++    expect(f.messages.get("t1")).toHaveLength(1);
++    expect(f.folders[0]?.name).toBe("Action Required");
++  });
++});
++
++  it("does not recreate metadata when a thread is deleted during response append", async () => {
++    const f = await fixture();
++    f.threads.set("t-race", { threadId: "t-race", title: "request" });
++    vi.mocked(f.host.agent.updateState).mockImplementationOnce(async (threadId: string) => {
++      f.threads.delete(threadId);
++      return { checkpointId: "cp", threadId };
++    });
++    const response = await kiroRoutes(f.host, {
++      agentsDir: f.agentsDir,
++      dispatch: f.dispatch,
++    }).request("/kiro/responses", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({
++        handoffId: "h-race",
++        threadId: "t-race",
++        target: "demo-agent",
++        status: "done",
++        result: "late result",
++      }),
++    });
++
++    expect(response.status).toBe(200);
++    expect(f.threads.has("t-race")).toBe(false);
++  });
++
++it("does not recreate a thread deleted before response delivery", async () => {
++  const f = await fixture();
++  const response = await kiroRoutes(f.host, {
++    agentsDir: f.agentsDir,
++    dispatch: f.dispatch,
++  }).request("/kiro/responses", {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify({
++      handoffId: "h-orphan",
++      threadId: "deleted-thread",
++      target: "demo-agent",
++      status: "done",
++      result: "late result",
++    }),
++  });
++
++  expect(response.status).toBe(200);
++  expect(await response.json()).toEqual({
++    created: false,
++    threadId: "deleted-thread",
++    handoffId: "h-orphan",
++    orphaned: true,
++  });
++  expect(f.threads.has("deleted-thread")).toBe(false);
++  expect(f.messages.has("deleted-thread")).toBe(false);
++});
++
++describe("GET /kiro/handoffs/pending", () => {
++  async function pendingDir(root: string) {
++    const dir = join(root, "data", "bridge", "pending");
++    await import("node:fs/promises").then(({ mkdir }) => mkdir(dir, { recursive: true }));
++    return dir;
++  }
++
++  it("is empty, not an error, before any handoff exists", async () => {
++    const f = await fixture();
++    const response = await kiroRoutes(f.host, { agentsDir: f.agentsDir }).request("/kiro/handoffs/pending");
++    expect(response.status).toBe(200);
++    expect(await response.json()).toEqual({ pending: [] });
++  });
++
++  it("lists outstanding handoffs oldest first", async () => {
++    const f = await fixture();
++    const dir = await pendingDir(f.root);
++    await writeFile(
++      join(dir, "h-new.json"),
++      JSON.stringify({ handoffId: "h-new", threadId: "t2", target: "second-agent", requestedAt: "2026-09-21T10:00:00.000Z" }),
++    );
++    await writeFile(
++      join(dir, "h-old.json"),
++      JSON.stringify({ handoffId: "h-old", threadId: "t1", target: "demo-agent", requestedAt: "2026-09-21T09:00:00.000Z" }),
++    );
++
++    const response = await kiroRoutes(f.host, { agentsDir: f.agentsDir }).request("/kiro/handoffs/pending");
++    expect(response.status).toBe(200);
++    expect(await response.json()).toEqual({
++      pending: [
++        { handoffId: "h-old", threadId: "t1", target: "demo-agent", requestedAt: "2026-09-21T09:00:00.000Z" },
++        { handoffId: "h-new", threadId: "t2", target: "second-agent", requestedAt: "2026-09-21T10:00:00.000Z" },
++      ],
++    });
++  });
++
++  it("skips entries that cannot name a thread and a target", async () => {
++    const f = await fixture();
++    const dir = await pendingDir(f.root);
++    await writeFile(join(dir, "broken.json"), "{");
++    await writeFile(join(dir, "no-target.json"), JSON.stringify({ handoffId: "h1", threadId: "t1" }));
++    await writeFile(join(dir, "no-thread.json"), JSON.stringify({ handoffId: "h2", target: "second-agent" }));
++    await writeFile(join(dir, "not-json.txt"), JSON.stringify({ handoffId: "h3", threadId: "t3", target: "x" }));
++    await writeFile(
++      join(dir, "good.json"),
++      JSON.stringify({ handoffId: "h-good", threadId: "t-good", target: "demo-agent", requestedAt: "2026-09-21T09:00:00.000Z" }),
++    );
++
++    const response = await kiroRoutes(f.host, { agentsDir: f.agentsDir }).request("/kiro/handoffs/pending");
++    const body = (await response.json()) as { pending: Array<{ handoffId: string }> };
++    expect(body.pending.map((item) => item.handoffId)).toEqual(["h-good"]);
++  });
++
++  it("surfaces a handoff the moment the send route accepts it", async () => {
++    const f = await fixture();
++    const routes = kiroRoutes(f.host, { agentsDir: f.agentsDir, dispatch: f.dispatch });
++    const accepted = await routes.request("/kiro/handoffs", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ target: "demo-agent", message: "oi", threadId: "t-live" }),
++    });
++    expect(accepted.status).toBe(202);
++
++    const response = await routes.request("/kiro/handoffs/pending");
++    const body = (await response.json()) as { pending: Array<Record<string, unknown>> };
++    expect(body.pending).toHaveLength(1);
++    expect(body.pending[0]).toMatchObject({ handoffId: "h123456", threadId: "t-live", target: "demo-agent" });
++    expect(typeof body.pending[0]?.requestedAt).toBe("string");
++  });
++
++  it("still reports the mapping right after a response, because the watcher owns the move", async () => {
++    const f = await fixture();
++    const routes = kiroRoutes(f.host, { agentsDir: f.agentsDir, dispatch: f.dispatch });
++    await routes.request("/kiro/handoffs", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ target: "demo-agent", message: "oi", threadId: "t-window" }),
++    });
++    await routes.request("/kiro/responses", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({
++        handoffId: "h123456",
++        threadId: "t-window",
++        target: "demo-agent",
++        status: "done",
++        result: "pronto",
++      }),
++    });
++
++    const body = (await (await routes.request("/kiro/handoffs/pending")).json()) as {
++      pending: Array<{ handoffId: string }>;
++    };
++    expect(body.pending.map((item) => item.handoffId)).toEqual(["h123456"]);
++    expect(f.threads.get("t-window")).toMatchObject({ lastMessageRole: "ai" });
++  });
++});
++
++describe("mail semantics: Sent on send, Inbox on reply", () => {
++  const sentId = (f: Awaited<ReturnType<typeof fixture>>) =>
++    f.folders.find((folder) => folder.name === "Sent")?.folderId;
++
++  async function send(routes: ReturnType<typeof kiroRoutes>, threadId: string) {
++    return routes.request("/kiro/handoffs", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ target: "demo-agent", message: "oi", threadId }),
++    });
++  }
++
++  async function reply(
++    routes: ReturnType<typeof kiroRoutes>,
++    threadId: string,
++    extra: Record<string, unknown> = {},
++  ) {
++    return routes.request("/kiro/responses", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({
++        handoffId: "h123456",
++        threadId,
++        target: "demo-agent",
++        status: "done",
++        result: "pronto",
++        ...extra,
++      }),
++    });
++  }
++
++  it("sending files the thread under Sent, read", async () => {
++    const f = await fixture();
++    const routes = kiroRoutes(f.host, { agentsDir: f.agentsDir, dispatch: f.dispatch });
++    await send(routes, "t-mail");
++
++    const thread = f.threads.get("t-mail") as Record<string, unknown>;
++    expect(sentId(f)).toBeTruthy();
++    expect(thread.folderId).toBe(sentId(f));
++    expect(thread.unread).toBe(false);
++  });
++
++  it("the reply pulls the thread out of Sent back to the inbox, unread", async () => {
++    const f = await fixture();
++    const routes = kiroRoutes(f.host, { agentsDir: f.agentsDir, dispatch: f.dispatch });
++    await send(routes, "t-mail");
++    await reply(routes, "t-mail");
++
++    const thread = f.threads.get("t-mail") as Record<string, unknown>;
++    expect(thread.folderId ?? null).toBeNull();
++    expect(thread.unread).toBe(true);
++  });
++
++  it("a reply does not yank a thread the user filed somewhere on purpose", async () => {
++    const f = await fixture();
++    const routes = kiroRoutes(f.host, { agentsDir: f.agentsDir, dispatch: f.dispatch });
++    await send(routes, "t-filed");
++    f.host.threadStore.update("t-filed", { folderId: "my-projects" });
++    await reply(routes, "t-filed");
++
++    const thread = f.threads.get("t-filed") as Record<string, unknown>;
++    expect(thread.folderId).toBe("my-projects");
++    expect(thread.unread).toBe(true);
++  });
++
++  it("needs-input outranks Sent: the thread lands in Action Required", async () => {
++    const f = await fixture();
++    const routes = kiroRoutes(f.host, { agentsDir: f.agentsDir, dispatch: f.dispatch });
++    await send(routes, "t-blocked");
++    await reply(routes, "t-blocked", { status: "failed", result: "precisa de login" });
++
++    const action = f.folders.find((folder) => folder.name === "Action Required")?.folderId;
++    const thread = f.threads.get("t-blocked") as Record<string, unknown>;
++    expect(thread.folderId).toBe(action);
++  });
++
++  it("replying again from the inbox re-files under Sent (a treplica leaves)", async () => {
++    const f = await fixture();
++    const routes = kiroRoutes(f.host, { agentsDir: f.agentsDir, dispatch: f.dispatch });
++    await send(routes, "t-cycle");
++    await reply(routes, "t-cycle");
++    await send(routes, "t-cycle");
++
++    const thread = f.threads.get("t-cycle") as Record<string, unknown>;
++    expect(thread.folderId).toBe(sentId(f));
++    expect(thread.unread).toBe(false);
++    expect(f.folders.filter((folder) => folder.name === "Sent")).toHaveLength(1);
++  });
++});
++
++describe("GET /kiro/agents: ephemeral companions stay out of the dropdown", () => {
++  afterEach(() => {
++    delete process.env.PIZZA_KIRO_AGENTS_EXCLUDE;
++  });
++
++  async function seedCompanions(agentsDir: string) {
++    const { writeFile: wf } = await import("node:fs/promises");
++    for (const name of [
++      "kirocrew-skill-view-0027b6ebf7c4fc921aab4e71",
++      "kirocrew-skill-view-f4f65391f8b77e17d0d86d85",
++    ]) {
++      await wf(join(agentsDir, `${name}.json`), JSON.stringify({ name, description: "companion" }));
++    }
++    await wf(
++      join(agentsDir, "kirocrew-conductor.json"),
++      JSON.stringify({ name: "kirocrew-conductor", description: "real" }),
++    );
++  }
++
++  it("hides skill-view companions but keeps real kirocrew agents", async () => {
++    const f = await fixture();
++    await seedCompanions(f.agentsDir);
++    const response = await kiroRoutes(f.host, { agentsDir: f.agentsDir }).request("/kiro/agents");
++    const body = (await response.json()) as { agents: Array<{ name: string }> };
++    const names = body.agents.map((agent) => agent.name);
++    expect(names).toContain("kirocrew-conductor");
++    expect(names).toContain("demo-agent");
++    expect(names.some((name) => name.startsWith("kirocrew-skill-view-"))).toBe(false);
++  });
++
++  it("an operator override replaces the default pattern", async () => {
++    const f = await fixture();
++    await seedCompanions(f.agentsDir);
++    process.env.PIZZA_KIRO_AGENTS_EXCLUDE = "^kirocrew-";
++    const body = (await (await kiroRoutes(f.host, { agentsDir: f.agentsDir }).request("/kiro/agents")).json()) as {
++      agents: Array<{ name: string }>;
++    };
++    const names = body.agents.map((agent) => agent.name);
++    expect(names).toContain("demo-agent");
++    expect(names.some((name) => name.startsWith("kirocrew-"))).toBe(false);
++  });
++
++  it("an empty override disables filtering entirely", async () => {
++    const f = await fixture();
++    await seedCompanions(f.agentsDir);
++    process.env.PIZZA_KIRO_AGENTS_EXCLUDE = "";
++    const body = (await (await kiroRoutes(f.host, { agentsDir: f.agentsDir }).request("/kiro/agents")).json()) as {
++      agents: Array<{ name: string }>;
++    };
++    expect(body.agents.some((agent) => agent.name.startsWith("kirocrew-skill-view-"))).toBe(true);
++  });
++
++  it("a broken override regex falls back to the default filter, not to the noise", async () => {
++    const f = await fixture();
++    await seedCompanions(f.agentsDir);
++    process.env.PIZZA_KIRO_AGENTS_EXCLUDE = "([";
++    const body = (await (await kiroRoutes(f.host, { agentsDir: f.agentsDir }).request("/kiro/agents")).json()) as {
++      agents: Array<{ name: string }>;
++    };
++    const names = body.agents.map((agent) => agent.name);
++    expect(names.some((name) => name.startsWith("kirocrew-skill-view-"))).toBe(false);
++    expect(names).toContain("kirocrew-conductor");
++  });
++});
++
++describe("GET /kiro/handoffs/pending: queue position and running state", () => {
++  async function queueFixture() {
++    const f = await fixture();
++    const { mkdir } = await import("node:fs/promises");
++    const queueDir = join(f.root, "queue");
++    for (const d of ["pending", "running"]) await mkdir(join(queueDir, d), { recursive: true });
++    const bridge = join(f.root, "data", "bridge", "pending");
++    await mkdir(bridge, { recursive: true });
++    const item = (id: string, created: string, extra: Record<string, unknown> = {}) =>
++      JSON.stringify({ id, created, params: { source: "a2a-handoff" }, ...extra });
++    // three A2A items waiting, oldest first; one non-A2A item that the A2A worker never takes
++    await writeFile(join(queueDir, "pending", "h-q1.json"), item("h-q1", "2026-09-28T10:00:01Z"));
++    await writeFile(join(queueDir, "pending", "h-q2.json"), item("h-q2", "2026-09-28T10:00:02Z"));
++    await writeFile(join(queueDir, "pending", "h-q3.json"), item("h-q3", "2026-09-28T10:00:03Z"));
++    await writeFile(
++      join(queueDir, "pending", "backlog-x.json"),
++      JSON.stringify({ id: "backlog-x", created: "2026-09-28T09:00:00Z", params: { source: "backlog" } }),
++    );
++    await writeFile(join(queueDir, "running", "h-run.json"), item("h-run", "2026-09-28T09:59:00Z"));
++    for (const id of ["h-q1", "h-q3", "h-run", "h-gone"]) {
++      await writeFile(
++        join(bridge, `${id}.json`),
++        JSON.stringify({ handoffId: id, threadId: `t-${id}`, target: "demo-agent", requestedAt: "2026-09-28T10:00:00.000Z" }),
++      );
++    }
++    return { ...f, queueDir };
++  }
++
++  it("reports queue position among A2A items only, and running state with a start time", async () => {
++    const f = await queueFixture();
++    const body = (await (
++      await kiroRoutes(f.host, { agentsDir: f.agentsDir, queueDir: f.queueDir }).request("/kiro/handoffs/pending")
++    ).json()) as { pending: Array<Record<string, unknown>> };
++    const byId = new Map(body.pending.map((p) => [p.handoffId, p]));
++    expect(byId.get("h-q1")).toMatchObject({ queueState: "queued", ahead: 0 });
++    expect(byId.get("h-q3")).toMatchObject({ queueState: "queued", ahead: 2 });
++    expect(byId.get("h-run")).toMatchObject({ queueState: "running" });
++    expect(typeof byId.get("h-run")?.startedAt).toBe("string");
++  });
++
++  it("leaves a handoff the queue no longer holds without a state rather than guessing one", async () => {
++    const f = await queueFixture();
++    const body = (await (
++      await kiroRoutes(f.host, { agentsDir: f.agentsDir, queueDir: f.queueDir }).request("/kiro/handoffs/pending")
++    ).json()) as { pending: Array<Record<string, unknown>> };
++    const gone = body.pending.find((p) => p.handoffId === "h-gone");
++    expect(gone).toBeDefined();
++    expect(gone?.queueState).toBeUndefined();
++  });
++
++  it("survives a missing queue directory", async () => {
++    const f = await fixture();
++    const response = await kiroRoutes(f.host, { agentsDir: f.agentsDir, queueDir: join(f.root, "nope") }).request(
++      "/kiro/handoffs/pending",
++    );
++    expect(response.status).toBe(200);
++  });
++});
+diff --git a/apps/api-server/src/routes-kiro.ts b/apps/api-server/src/routes-kiro.ts
+new file mode 100644
+index 0000000..25c25c9
+--- /dev/null
++++ b/apps/api-server/src/routes-kiro.ts
+@@ -0,0 +1,293 @@
++import { execFile } from "node:child_process";
++import { createHash } from "node:crypto";
++import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
++import { homedir } from "node:os";
++import { basename, join } from "node:path";
++import { promisify } from "node:util";
++import { AIMessage, HumanMessage } from "@langchain/core/messages";
++import { Hono } from "hono";
++import type { AgentHost } from "./agent-host.js";
++
++const run = promisify(execFile);
++const TARGET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
++const MAX_MESSAGE = 100_000;
++
++// KiroCrew materializes a throwaway chat-companion config per opened skill view, in batches, into
++// the same directory as real agents and never removes them — hundreds accumulate within days and
++// would bury the recipient dropdown. Nobody addresses mail to a view's companion.
++const DEFAULT_EXCLUDE = /^kirocrew-skill-view-[0-9a-f]{16,}$/;
++
++function agentExcluded(name: string): boolean {
++  const custom = process.env.PIZZA_KIRO_AGENTS_EXCLUDE;
++  if (custom !== undefined) {
++    if (custom === "") return false;
++    try {
++      return new RegExp(custom).test(name);
++    } catch {
++      // An unparseable override must not silently widen the list back to the noise.
++      return DEFAULT_EXCLUDE.test(name);
++    }
++  }
++  return DEFAULT_EXCLUDE.test(name);
++}
++
++interface BridgeDeps {
++  agentsDir: string;
++  queueDir: string;
++  dispatch: (target: string, message: string, threadId: string, requestId?: string) => Promise<string>;
++}
++
++export function kiroRoutes(host: AgentHost, overrides: Partial<BridgeDeps> = {}): Hono {
++  const agentsDir = overrides.agentsDir ?? process.env.PIZZA_KIRO_AGENTS_DIR ?? join(homedir(), ".kiro", "agents");
++  const dispatch = overrides.dispatch ?? defaultDispatch;
++  const queueDir =
++    overrides.queueDir ?? process.env.PIZZA_KIRO_QUEUE_DIR ?? join(homedir(), ".kiro", "agents-state", "queue");
++  const app = new Hono();
++
++  app.get("/kiro/agents", async (c) => {
++    const agents = [];
++    for (const entry of await readdir(agentsDir, { withFileTypes: true }).catch(() => [])) {
++      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
++      const name = basename(entry.name, ".json");
++      if (!TARGET.test(name) || agentExcluded(name)) continue;
++      try {
++        const parsed = JSON.parse(await readFile(join(agentsDir, entry.name), "utf8")) as Record<string, unknown>;
++        agents.push({
++          name,
++          cliName: typeof parsed.name === "string" ? parsed.name : name,
++          description: typeof parsed.description === "string" ? parsed.description : "",
++        });
++      } catch {
++        // Invalid configs are not routable and stay visible in the Agent Dashboard health view.
++      }
++    }
++    agents.sort((a, b) => a.name.localeCompare(b.name));
++    return c.json({ agents });
++  });
++
++  // The pending directory is the source of truth: the return watcher moves a mapping out of it the
++  // moment it delivers, so a derived view can never claim a handoff is outstanding after it landed.
++  // Duplicating this into the thread record would be a second copy free to drift.
++  app.get("/kiro/handoffs/pending", async (c) => {
++    const dir = join(host.dataRoot, "bridge", "pending");
++    const pending = [];
++    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
++      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
++      try {
++        const parsed = JSON.parse(await readFile(join(dir, entry.name), "utf8")) as Record<string, unknown>;
++        const handoffId = validText(parsed.handoffId, 200);
++        const threadId = validText(parsed.threadId, 200);
++        const target = validText(parsed.target, 100);
++        // writeMapping renames into place, but a foreign writer could leave a partial file.
++        if (!handoffId || !threadId || !target) continue;
++        pending.push({ handoffId, threadId, target, requestedAt: validText(parsed.requestedAt, 40) });
++      } catch {
++        // Unreadable mapping: the handoff may well be in flight, but nothing here can say to whom.
++      }
++    }
++    pending.sort((a, b) => (a.requestedAt ?? "").localeCompare(b.requestedAt ?? ""));
++    const states = await queueStates(queueDir);
++    return c.json({
++      pending: pending.map((item) => ({ ...item, ...(states.get(item.handoffId) ?? {}) })),
++    });
++  });
++
++  app.post("/kiro/handoffs", async (c) => {
++    const raw = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
++    const target = validText(raw.target, 100);
++    const message = validText(raw.message, MAX_MESSAGE);
++    const threadId = validText(raw.threadId, 200);
++    const requestId = validText(raw.requestId, 200);
++    if (!target || !TARGET.test(target) || !message || !threadId) {
++      return c.json({ error: "target, message and threadId are required" }, 400);
++    }
++    if (!(await agentExists(agentsDir, target))) return c.json({ error: "target agent not found" }, 404);
++
++    const handoffId = await dispatch(target, message, threadId, requestId);
++    await writeMapping(host.dataRoot, {
++      handoffId,
++      threadId,
++      target,
++      requestedAt: new Date().toISOString(),
++    });
++    await appendOnce(
++      host,
++      threadId,
++      new HumanMessage({ id: `kiro_request_${handoffId}`, content: `**To: ${target}**\n\n${message}` }),
++    );
++    const record = host.threadStore.ensure({
++      threadId,
++      title: `To ${target}: ${message.slice(0, 80)}`,
++      source: "user",
++    });
++    // Mail semantics: sending files the conversation under Sent instead of leaving it in the inbox.
++    // The user is not expected to sit on an open thread; the reply brings it back.
++    host.threadStore.update(threadId, {
++      title: record.title === "New conversation" ? `To ${target}: ${message.slice(0, 80)}` : record.title,
++      lastMessage: message.slice(0, 500),
++      lastMessageRole: "human",
++      unread: false,
++      folderId: ensureFolder(host, "Sent").folderId,
++    });
++    host.threadStore.touch(threadId);
++    return c.json({ accepted: true, handoffId, target, threadId }, 202);
++  });
++
++  app.post("/kiro/responses", async (c) => {
++    const raw = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
++    const handoffId = validText(raw.handoffId, 200);
++    const threadId = validText(raw.threadId, 200);
++    const target = validText(raw.target, 100);
++    const result = validText(raw.result, MAX_MESSAGE);
++    const status = validText(raw.status, 30);
++    const needsInput = raw.needsInput === true || status === "failed" || status === "deferred";
++    if (!handoffId || !threadId || !target || !result || !status) {
++      return c.json({ error: "handoffId, threadId, target, result and status are required" }, 400);
++    }
++    const existing = host.threadStore.get(threadId);
++    if (!existing) {
++      return c.json({ created: false, threadId, handoffId, orphaned: true });
++    }
++
++    const created = await appendOnce(
++      host,
++      threadId,
++      new AIMessage({
++        id: `kiro_response_${handoffId}`,
++        content: `**From: ${target}**\n**Status: ${status}**\n\n${result}`,
++      }),
++    );
++    const patch: Record<string, unknown> = {
++      unread: true,
++      lastMessage: result.slice(0, 500),
++      lastMessageRole: "ai",
++    };
++    const sent = host.folderStore.list().find((folder) => folder.name === "Sent");
++    if (needsInput) {
++      patch.folderId = ensureFolder(host, "Action Required").folderId;
++    } else if (sent && existing.folderId === sent.folderId) {
++      // The reply returns the conversation to the inbox — but only out of Sent, so a thread the
++      // user filed somewhere on purpose is not yanked back.
++      patch.folderId = null;
++    }
++    host.threadStore.update(threadId, patch);
++    host.threadStore.touch(threadId);
++    return c.json({ created, threadId, handoffId });
++  });
++
++  return app;
++}
++
++async function defaultDispatch(
++  target: string,
++  message: string,
++  threadId: string,
++  requestId?: string,
++): Promise<string> {
++  const script = process.env.PIZZA_KIRO_HANDOFF ?? join(homedir(), ".kiro", "agents", "scripts", "handoff.sh");
++  const key = createHash("sha256")
++    .update(`${threadId}\0${target}\0${message}\0${requestId ?? "legacy"}`)
++    .digest("hex");
++  const input = JSON.stringify({
++    thread_id: threadId,
++    request: message,
++    response_contract: "Final line MUST be PIZZA_RESPONSE|status=DONE|result=<concise answer> or PIZZA_RESPONSE|status=NEEDS_INPUT|result=<required action>. Keep it under 500 characters.",
++  });
++  const { stdout } = await run(
++    script,
++    [
++      "pizza-bot",
++      target,
++      "pizza-direct-message",
++      input,
++      "900",
++      "Complete result in PIZZA_RESPONSE contract returned to the Pizza thread.",
++      "^[[:space:]]*>[[:space:]]*PIZZA_RESPONSE\\|status=(DONE|NEEDS_INPUT)\\|result=",
++      `pizza-${key}`,
++      "2",
++    ],
++    { timeout: 15_000, maxBuffer: 64 * 1024 },
++  );
++  const id = stdout.trim().split(/\s+/).at(-1);
++  if (!id || !/^h[0-9]+$/.test(id)) throw new Error("handoff.sh returned no valid id");
++  return id;
++}
++
++interface QueueState {
++  queueState: "queued" | "running";
++  /** A2A items the worker will start before this one; it drains oldest-created first. */
++  ahead?: number;
++  /** When the dispatcher claimed the item, read from the running file's mtime. */
++  startedAt?: string;
++}
++
++/**
++ * Where each outstanding handoff sits in the delivery queue, so the inbox can say "queued, 2 ahead"
++ * instead of an undifferentiated wait. Best-effort by design: the queue is another process's
++ * directory, and anything unreadable simply yields no state rather than a wrong one.
++ */
++async function queueStates(queueDir: string): Promise<Map<string, QueueState>> {
++  const states = new Map<string, QueueState>();
++  const queued: Array<{ id: string; created: string }> = [];
++  for (const entry of await readdir(join(queueDir, "pending"), { withFileTypes: true }).catch(() => [])) {
++    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
++    try {
++      const item = JSON.parse(await readFile(join(queueDir, "pending", entry.name), "utf8")) as Record<string, unknown>;
++      const params = (item.params ?? {}) as Record<string, unknown>;
++      if (params.source !== "a2a-handoff" || item.needsInput) continue;
++      queued.push({ id: String(item.id ?? basename(entry.name, ".json")), created: String(item.created ?? "") });
++    } catch {
++      // A partial write from the producer; it will be readable on the next poll.
++    }
++  }
++  queued.sort((a, b) => a.created.localeCompare(b.created));
++  queued.forEach((item, index) => states.set(item.id, { queueState: "queued", ahead: index }));
++  for (const entry of await readdir(join(queueDir, "running"), { withFileTypes: true }).catch(() => [])) {
++    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
++    try {
++      const info = await stat(join(queueDir, "running", entry.name));
++      states.set(basename(entry.name, ".json"), { queueState: "running", startedAt: info.mtime.toISOString() });
++    } catch {
++      // Finished between readdir and stat: no longer running, and the next poll will say so.
++    }
++  }
++  return states;
++}
++
++async function agentExists(root: string, target: string): Promise<boolean> {
++  try {
++    const parsed = JSON.parse(await readFile(join(root, `${target}.json`), "utf8")) as Record<string, unknown>;
++    return typeof parsed.name === "string";
++  } catch {
++    return false;
++  }
++}
++
++async function writeMapping(dataRoot: string, value: Record<string, unknown>): Promise<void> {
++  const dir = join(dataRoot, "bridge", "pending");
++  await mkdir(dir, { recursive: true });
++  const target = join(dir, `${value.handoffId}.json`);
++  const tmp = `${target}.${process.pid}.tmp`;
++  await writeFile(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
++  await rename(tmp, target);
++}
++
++async function appendOnce(host: AgentHost, threadId: string, message: AIMessage | HumanMessage): Promise<boolean> {
++  await host.whenReady();
++  const state = await host.agent.getState(threadId);
++  const messages = (state.values as { messages?: Array<{ id?: string }> } | undefined)?.messages ?? [];
++  if (messages.some((item) => item.id === message.id)) return false;
++  await host.agent.updateState(threadId, { messages: [message] });
++  return true;
++}
++
++function ensureFolder(host: AgentHost, name: string) {
++  const existing = host.folderStore.list().find((folder) => folder.name === name);
++  return existing ?? host.folderStore.create({ folderId: createHash("sha256").update(name).digest("hex").slice(0, 32), name });
++}
++
++function validText(value: unknown, max: number): string | undefined {
++  if (typeof value !== "string") return undefined;
++  const result = value.trim();
++  return result.length > 0 && result.length <= max ? result : undefined;
++}
+diff --git a/apps/api-server/src/routes-notifications.test.ts b/apps/api-server/src/routes-notifications.test.ts
+new file mode 100644
+index 0000000..4fc0c98
+--- /dev/null
++++ b/apps/api-server/src/routes-notifications.test.ts
+@@ -0,0 +1,141 @@
++import { describe, expect, it, vi } from "vitest";
++import type { AgentHost } from "./agent-host.js";
++import { notificationRoutes } from "./routes-notifications.js";
++
++function fakeHost() {
++  const threads = new Map<string, Record<string, unknown>>();
++  const folders: Array<{ folderId: string; name: string }> = [];
++  const updateState = vi.fn(async () => ({ checkpointId: "cp-1", threadId: "thread" }));
++  const reindexThread = vi.fn();
++  const host = {
++    whenReady: vi.fn(async () => undefined),
++    agent: { updateState },
++    threadStore: {
++      get: (id: string) => threads.get(id),
++      create: (input: Record<string, unknown>) => {
++        const row = { ...input, unread: false, awaitingAction: false };
++        threads.set(String(input.threadId), row);
++        return row;
++      },
++      update: (id: string, patch: Record<string, unknown>) => {
++        const row = { ...threads.get(id), ...patch };
++        threads.set(id, row);
++        return row;
++      },
++      touch: vi.fn(),
++    },
++    folderStore: {
++      list: () => folders,
++      create: (input: { folderId: string; name: string }) => {
++        folders.push(input);
++        return input;
++      },
++    },
++    search: { reindexThread },
++    deleteThread: vi.fn(async (id: string) => threads.delete(id)),
++  } as unknown as AgentHost;
++  return { host, threads, folders, updateState, reindexThread };
++}
++
++const payload = {
++  title: "Report ready",
++  body: "The weekly report was published.",
++  source: "reporting-agent",
++  severity: "info",
++  requiresAction: false,
++  idempotencyKey: "reporting-agent:report:2026-09-17",
++  link: "http://127.0.0.1:7781/private/report",
++};
++
++describe("notificationRoutes", () => {
++  it("creates one unread thread without invoking a model", async () => {
++    const f = fakeHost();
++    const app = notificationRoutes(f.host);
++
++    const response = await app.request("/notifications", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(payload),
++    });
++
++    expect(response.status).toBe(201);
++    const body = (await response.json()) as {
++      created: boolean;
++      thread: { unread: boolean; awaitingAction: boolean; title: string; pinned: boolean };
++    };
++    expect(body.created).toBe(true);
++    expect(body.thread.unread).toBe(true);
++    expect(body.thread.awaitingAction).toBe(false);
++    expect(f.updateState).toHaveBeenCalledOnce();
++    expect(f.reindexThread).toHaveBeenCalledOnce();
++    expect(f.folders[0]?.name).toBe("Agent Updates");
++  });
++
++  it("deduplicates by business id before writing state", async () => {
++    const f = fakeHost();
++    const app = notificationRoutes(f.host);
++    const request = () =>
++      app.request("/notifications", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify(payload),
++      });
++
++    expect((await request()).status).toBe(201);
++    const duplicate = await request();
++
++    expect(duplicate.status).toBe(200);
++    expect(((await duplicate.json()) as { created: boolean }).created).toBe(false);
++    expect(f.updateState).toHaveBeenCalledOnce();
++  });
++
++  it("routes action notices to a separate folder and prefixes the title", async () => {
++    const f = fakeHost();
++    const response = await notificationRoutes(f.host).request("/notifications", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ ...payload, requiresAction: true, severity: "critical" }),
++    });
++
++    const body = (await response.json()) as {
++      created: boolean;
++      thread: { unread: boolean; awaitingAction: boolean; title: string; pinned: boolean };
++    };
++    expect(response.status).toBe(201);
++    expect(body.thread.title).toBe("[ACTION] Report ready");
++    expect(body.thread.pinned).toBe(true);
++    expect(f.folders[0]?.name).toBe("Action Required");
++  });
++
++  it("rejects incomplete payloads and unsafe links", async () => {
++    const f = fakeHost();
++    const app = notificationRoutes(f.host);
++    const missing = await app.request("/notifications", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: "{}",
++    });
++    const unsafe = await app.request("/notifications", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ ...payload, link: "file:///etc/passwd" }),
++    });
++
++    expect(missing.status).toBe(400);
++    expect(unsafe.status).toBe(400);
++  });
++
++  it("removes the empty thread when state persistence fails", async () => {
++    const f = fakeHost();
++    vi.mocked(f.host.agent.updateState).mockRejectedValueOnce(new Error("checkpoint failed"));
++
++    const response = await notificationRoutes(f.host).request("/notifications", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(payload),
++    });
++
++    expect(response.status).toBe(500);
++    expect(f.threads.size).toBe(0);
++  });
++});
+diff --git a/apps/api-server/src/routes-notifications.ts b/apps/api-server/src/routes-notifications.ts
+new file mode 100644
+index 0000000..9f69d2c
+--- /dev/null
++++ b/apps/api-server/src/routes-notifications.ts
+@@ -0,0 +1,96 @@
++import { createHash, randomUUID } from "node:crypto";
++import { AIMessage } from "@langchain/core/messages";
++import { Hono } from "hono";
++import type { AgentHost } from "./agent-host.js";
++
++const MAX_TITLE = 160;
++const MAX_BODY = 20_000;
++const SEVERITIES = new Set(["info", "warning", "critical"]);
++
++export function notificationRoutes(host: AgentHost): Hono {
++  const app = new Hono();
++
++  app.post("/notifications", async (c) => {
++    const raw = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
++    const title = text(raw.title, MAX_TITLE);
++    const body = text(raw.body, MAX_BODY);
++    const source = text(raw.source, 100);
++    const idempotencyKey = text(raw.idempotencyKey, 500);
++    const severity = typeof raw.severity === "string" ? raw.severity : "info";
++    const requiresAction = raw.requiresAction === true;
++    const link = optionalHttpUrl(raw.link);
++
++    if (!title || !body || !source || !idempotencyKey || !SEVERITIES.has(severity)) {
++      return c.json(
++        { error: "title, body, source, idempotencyKey and a valid severity are required" },
++        400,
++      );
++    }
++    if (raw.link != null && link === undefined) {
++      return c.json({ error: "link must be an http(s) URL" }, 400);
++    }
++
++    const digest = createHash("sha256").update(idempotencyKey).digest("hex");
++    const threadId = `notification_${digest.slice(0, 24)}`;
++    const existing = host.threadStore.get(threadId);
++    if (existing) return c.json({ created: false, thread: existing });
++
++    await host.whenReady();
++    const folder = ensureFolder(host, requiresAction ? "Action Required" : "Agent Updates");
++    host.threadStore.create({
++      threadId,
++      title: `${requiresAction ? "[ACTION] " : ""}${title}`,
++      source: "trigger",
++      folderId: folder.folderId,
++      pinned: severity === "critical",
++    });
++
++    const content = [
++      `**Source:** ${source}`,
++      `**Severity:** ${severity}`,
++      "",
++      body,
++      ...(link ? ["", `[Open artifact](${link})`] : []),
++    ].join("\n");
++    const message = new AIMessage({ id: `notification_message_${digest.slice(0, 24)}`, content });
++
++    try {
++      await host.agent.updateState(threadId, { messages: [message] });
++      const thread = host.threadStore.update(threadId, {
++        unread: true,
++        lastMessage: body.slice(0, 500),
++        lastMessageRole: "ai",
++      });
++      host.threadStore.touch(threadId);
++      host.search.reindexThread(threadId, [message]);
++      return c.json({ created: true, thread }, 201);
++    } catch (error) {
++      await host.deleteThread(threadId);
++      throw error;
++    }
++  });
++
++  return app;
++}
++
++function ensureFolder(host: AgentHost, name: string) {
++  const existing = host.folderStore.list().find((folder) => folder.name === name);
++  return existing ?? host.folderStore.create({ folderId: randomUUID(), name });
++}
++
++function text(value: unknown, max: number): string | undefined {
++  if (typeof value !== "string") return undefined;
++  const result = value.trim();
++  return result.length > 0 && result.length <= max ? result : undefined;
++}
++
++function optionalHttpUrl(value: unknown): string | undefined {
++  if (value == null || value === "") return undefined;
++  if (typeof value !== "string") return undefined;
++  try {
++    const parsed = new URL(value);
++    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : undefined;
++  } catch {
++    return undefined;
++  }
++}
+diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
+index 6abb95d..2c16d87 100644
+--- a/apps/web/src/App.tsx
++++ b/apps/web/src/App.tsx
+@@ -8,6 +8,7 @@ import {
+ import { TooltipProvider } from "@/components/ui/tooltip";
+ import { ChatPane } from "./components/ChatPane.js";
+ import { Sidebar } from "./components/Sidebar.js";
++import { SidebarResizer } from "./components/SidebarResizer.js";
+ import { ActivityRail } from "./components/ActivityRail.js";
+ import { StatusBar } from "./components/StatusBar.js";
+ import {
+@@ -15,6 +16,7 @@ import {
+   useThreadSliceReadOnly,
+ } from "./use-thread-slice.js";
+ import { protocolStreamStore } from "./protocol-stream-store.js";
++import { useAppToast } from "./components/AppToast.js";
+ import { resolveApiBase, resolveApiHeaders } from "./api-config.js";
+ import { useSkillsAdmin, useMcpServersAdmin, useMemoriesAdmin, useModels, usePluginsAdmin, useProvidersAdmin, useStatus, useTriggers } from "./use-app-data.js";
+ import { PIZZA_BOT_AGENT } from "@pizza-bot/core";
+@@ -35,6 +37,7 @@ import { useChatFocus } from "./use-chat-focus.js";
+ import { usePromptHistory } from "./use-prompt-history.js";
+ import { useHotkey, HotkeyHelp } from "./hotkeys/index.js";
+ import { useIsMobile } from "./use-is-mobile.js";
++import { useSidebarWidth } from "./use-sidebar-width.js";
+ import { availableModels, configuredModels } from "./model-options.js";
+ import { composerDraftStore } from "./composer-draft-store.js";
+ import { adminVisibility, type AppView } from "./admin-visibility.js";
+@@ -197,19 +200,62 @@ export function App() {
+   const [showRail, setShowRail] = useState(false);
+ 
+   const isMobile = useIsMobile();
++  // The conversation list is a sized pane on desktop; on mobile it is the whole
++  // list view, so the stored width must not reach it.
++  const sidebar = useSidebarWidth();
++  const sidebarCollapsed = !isMobile && sidebar.layout.width === 0;
+   const [mobileListVisible, setMobileListVisible] = useState(true);
+ 
++  const notify = useAppToast();
+   const focus = useChatFocus();
+   const { composerRef, listRef, focusComposer, focusList } = focus;
+   const shouldFocusComposerRef = useRef(false);
+   const { cycler: history } = usePromptHistory();
+ 
+-  const openThread = useCallback((threadId: string, hydrate: boolean) => {
+-    if (hydrate) setOpenedThreads((prev) => (prev.has(threadId) ? prev : new Set(prev).add(threadId)));
+-    setActiveThreadId(threadId);
+-    setMobileListVisible(false);
++  // Opening a conversation must show the current truth: the bridge appends replies straight into
++  // graph state while nothing is mounted, and an entry that already hydrated once would replay its
++  // stale snapshot. Refreshing only an idle entry keeps live streams untouched.
++  const refreshIfIdle = useCallback((threadId: string) => {
++    const slice = protocolStreamStore.getSlice(threadId);
++    // Only an idle entry that already rendered content can be stale; a draft (no messages) and a
++    // first open (no entry) keep their existing attach paths, and a live stream is left alone.
++    if (slice.status !== "idle" || slice.messages.length === 0) return;
++    void protocolStreamStore.rehydrate(threadId).catch(() => {
++      // The pane surfaces hydration errors; a later open retries.
++    });
+   }, []);
+ 
++  const openThread = useCallback(
++    (threadId: string, hydrate: boolean) => {
++      if (hydrate) setOpenedThreads((prev) => (prev.has(threadId) ? prev : new Set(prev).add(threadId)));
++      refreshIfIdle(threadId);
++      setActiveThreadId(threadId);
++      setMobileListVisible(false);
++    },
++    [refreshIfIdle],
++  );
++
++  // A handoff appends the request into graph state server-side, so no stream frame announces it and
++  // a brand-new chat would sit on its empty state with the message already sent.
++  // Mail semantics: sending closes the conversation like dropping a letter in the outbox. The
++  // thread is hydrated in the background so it reopens instantly, and the reply brings it back
++  // to the inbox as unread — nobody sits on an open pane waiting.
++  const onHandoffAccepted = useCallback(
++    (threadId: string, target: string) => {
++      setOpenedThreads((prev) => (prev.has(threadId) ? prev : new Set(prev).add(threadId)));
++      void protocolStreamStore.rehydrate(threadId).catch(() => {
++        // The store surfaces hydration errors in the pane; a later mount retries.
++      });
++      setActiveThreadId(null);
++      setMobileListVisible(true);
++      notify({
++        title: `Sent to ${target}`,
++        description: "Filed under Sent. The reply will land in your inbox.",
++      });
++    },
++    [notify],
++  );
++
+   const openNotifiedThread = useCallback(
+     (threadId: string) => {
+       setView("inbox");
+@@ -223,11 +269,15 @@ export function App() {
+     activeThreadId,
+   );
+ 
+-  const onSelectThread = useCallback((threadId: string) => {
+-    setSearchTarget(null);
+-    setActiveThreadId(threadId);
+-    setMobileListVisible(false);
+-  }, []);
++  const onSelectThread = useCallback(
++    (threadId: string) => {
++      setSearchTarget(null);
++      refreshIfIdle(threadId);
++      setActiveThreadId(threadId);
++      setMobileListVisible(false);
++    },
++    [refreshIfIdle],
++  );
+ 
+   const onBackToList = useCallback(() => setMobileListVisible(true), []);
+ 
+@@ -378,7 +428,7 @@ export function App() {
+ 
+   return (
+     <TooltipProvider>
+-      <div className="app has-sidebar">
++      <div className={`app has-sidebar${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+         <div className="body">
+           <AppNavigation
+             view={view}
+@@ -522,7 +572,10 @@ export function App() {
+                 </button>
+               </ModuleHeader>
+ 
+-              <div className="inbox-body">
++              <div
++                className="inbox-body"
++                style={{ "--sidebar-w": `${sidebar.layout.width}px` } as React.CSSProperties}
++              >
+                 <Sidebar
+                   client={client}
+                   openedThreads={openedThreads}
+@@ -538,6 +591,15 @@ export function App() {
+                   onFocusComposer={focusComposer}
+                 />
+ 
++                {!isMobile && (
++                  <SidebarResizer
++                    layout={sidebar.layout}
++                    onResize={sidebar.resize}
++                    onNudge={sidebar.nudgeBy}
++                    onToggle={sidebar.toggle}
++                  />
++                )}
++
+                 <main className="content">
+                   <div className={panesClass(showRail)}>
+                     <section className="chat-pane">
+@@ -547,6 +609,7 @@ export function App() {
+                             key={activeThreadId}
+                             threadId={activeThreadId}
+                             hydrateOnMount={openedThreads.has(activeThreadId)}
++                            onHandoffAccepted={onHandoffAccepted}
+                             onFork={onFork}
+                             agent={agent}
+                             onRename={(title) => onRename(activeThreadId, title)}
+diff --git a/apps/web/src/api-client.ts b/apps/web/src/api-client.ts
+index 3d3563b..f6b70fa 100644
+--- a/apps/web/src/api-client.ts
++++ b/apps/web/src/api-client.ts
+@@ -146,6 +146,24 @@ export class ApiClient {
+     return { checkpointId: body.checkpoint_id, threadId: body.thread_id };
+   }
+ 
++  async listKiroAgents(): Promise<KiroAgentInfo[]> {
++    return (await this.json<{ agents: KiroAgentInfo[] }>("list Kiro agents", "/kiro/agents")).agents;
++  }
++
++  async sendKiroHandoff(input: {
++    target: string;
++    message: string;
++    threadId: string;
++    requestId?: string;
++  }): Promise<KiroHandoffAccepted> {
++    return this.json("send Kiro handoff", "/kiro/handoffs", { method: "POST", body: input });
++  }
++
++  async listPendingKiroHandoffs(): Promise<KiroPendingHandoff[]> {
++    return (await this.json<{ pending: KiroPendingHandoff[] }>("list pending Kiro handoffs", "/kiro/handoffs/pending"))
++      .pending;
++  }
++
+   async listThreads(): Promise<ThreadInfo[]> {
+     return this.json("list threads", "/threads/list");
+   }
+@@ -705,6 +723,28 @@ function logQuerySuffix(query: LogQueryParams, includePaging: boolean): string {
+   return params.size > 0 ? `?${params}` : "";
+ }
+ 
++export interface KiroAgentInfo {
++  name: string;
++  cliName: string;
++  description: string;
++}
++
++export interface KiroHandoffAccepted {
++  accepted: boolean;
++  handoffId: string;
++  target: string;
++  threadId: string;
++}
++export interface KiroPendingHandoff {
++  handoffId: string;
++  threadId: string;
++  target: string;
++  requestedAt?: string;
++  queueState?: "queued" | "running";
++  ahead?: number;
++  startedAt?: string;
++}
++
+ export interface ThreadInfo {
+   threadId: string;
+   title: string;
+diff --git a/apps/web/src/components/ChatPane.tsx b/apps/web/src/components/ChatPane.tsx
+index 126dc6e..c5c8344 100644
+--- a/apps/web/src/components/ChatPane.tsx
++++ b/apps/web/src/components/ChatPane.tsx
+@@ -6,6 +6,7 @@ import { ChatFeed } from "./ChatFeed.js";
+ import { ChatHeader } from "./ChatHeader.js";
+ import { WelcomeState } from "./WelcomeState.js";
+ import { Composer } from "./Composer.js";
++import { threadCounterpart } from "../projection/counterpart.js";
+ import { RunErrorBanner } from "./RunErrorBanner.js";
+ import { useHotkey } from "../hotkeys/index.js";
+ 
+@@ -25,6 +26,7 @@ export interface ChatPaneProps {
+   title?: string;
+   composerRef?: React.RefObject<HTMLTextAreaElement | null>;
+   onComposerEscape?: () => void;
++  onHandoffAccepted?: (threadId: string, target: string) => void;
+   history?: PromptHistoryCycler;
+   onBack?: () => void;
+   headerActions?: ReactNode;
+@@ -50,6 +52,7 @@ export function ChatPane({
+   headerActions,
+   searchTarget,
+   onSearchTargetHandled,
++  onHandoffAccepted,
+ }: ChatPaneProps) {
+   const { messages, status, errorText, errorCode, queued, send, steerNow, cancelQueued, stop, decide } =
+     useThreadSlice(threadId, hydrateOnMount);
+@@ -120,6 +123,8 @@ export function ChatPane({
+         prefillToken={prefillToken}
+         composerRef={composerRef}
+         history={history}
++        onHandoffAccepted={onHandoffAccepted}
++        initialRecipient={threadCounterpart(messages) ?? undefined}
+       />
+     </div>
+   );
+diff --git a/apps/web/src/components/Composer.tsx b/apps/web/src/components/Composer.tsx
+index 74a29fb..cdc8d26 100644
+--- a/apps/web/src/components/Composer.tsx
++++ b/apps/web/src/components/Composer.tsx
+@@ -9,7 +9,7 @@ import {
+   type FormEvent,
+   type KeyboardEvent,
+ } from "react";
+-import { Plus, Cloud, ChevronDown, SendHorizontal, Square, X, FileText, Loader2, Search } from "lucide-react";
++import { Plus, Cloud, ChevronDown, SendHorizontal, Square, X, FileText, Loader2, Search, AtSign } from "lucide-react";
+ import type { ModelsInfo, ApiClient } from "@/api-client";
+ import type { AttachmentMeta } from "@pizza-bot/core";
+ import { ATTACHMENT_ACCEPT, isImageAttachmentType, resolveAttachmentMediaType } from "@pizza-bot/core";
+@@ -40,6 +40,8 @@ export function Composer({
+   prefillToken,
+   composerRef,
+   history,
++  onHandoffAccepted,
++  initialRecipient,
+ }: {
+   threadId: string;
+   streaming?: boolean;
+@@ -57,9 +59,17 @@ export function Composer({
+   prefillToken?: number;
+   composerRef?: React.RefObject<HTMLTextAreaElement | null>;
+   history?: PromptHistoryCycler;
++  /** The handoff appends a message server-side, so the pane has to be told to hydrate. */
++  onHandoffAccepted?: (threadId: string, target: string) => void;
++  /** Reply preselect: the agent this conversation is with, once messages hydrate. */
++  initialRecipient?: string;
+ }) {
+   const initialDraft = useRef(composerDraftStore.get(threadId)).current;
+   const [text, setText] = useState(initialDraft.text);
++  const [recipient, setRecipient] = useState("pizza-bot");
++  const recipientTouched = useRef(false);
++  const [kiroAgents, setKiroAgents] = useState<Array<{ name: string; description: string }>>([]);
++  const [routeNotice, setRouteNotice] = useState<string | null>(null);
+   const [model, setModel] = useState<string>(initialDraft.model || initialModel || "");
+   const [pickerOpen, setPickerOpen] = useState(false);
+   const [pickerCursor, setPickerCursor] = useState(0);
+@@ -70,6 +80,7 @@ export function Composer({
+   const pickerSearchRef = useRef<HTMLInputElement>(null);
+   const fileInputRef = useRef<HTMLInputElement>(null);
+   const composing = useRef(false);
++  const submitting = useRef(false);
+   const draftRevision = useRef(0);
+ 
+   const [attachments, setAttachments] = useState<AttachmentMeta[]>(initialDraft.attachments);
+@@ -88,10 +99,11 @@ export function Composer({
+ 
+   useEffect(() => {
+     mounted.current = true;
++    void client.listKiroAgents().then(setKiroAgents).catch(() => setKiroAgents([]));
+     return () => {
+       mounted.current = false;
+     };
+-  }, []);
++  }, [client]);
+ 
+   useEffect(() => {
+     composerDraftStore.set(threadId, { text, model, attachments });
+@@ -155,8 +167,18 @@ export function Composer({
+   };
+ 
+   // Do not submit while uploads are unresolved; the turn would omit their IDs.
++  // Messages hydrate after mount, so the reply preselect has to be adopted late — but never over
++  // a recipient the user already picked, and never as an option the dropdown does not offer.
++  useEffect(() => {
++    if (recipientTouched.current || !initialRecipient) return;
++    if (kiroAgents.some((agent) => agent.name === initialRecipient)) setRecipient(initialRecipient);
++  }, [initialRecipient, kiroAgents]);
++
++  const externalRecipient = recipient !== "pizza-bot";
+   const sendDisabled =
+-    uploading > 0 || (!text.trim() && attachments.length === 0);
++    uploading > 0 ||
++    (!text.trim() && attachments.length === 0) ||
++    (externalRecipient && (attachments.length > 0 || Boolean(streaming) || Boolean(interrupted)));
+ 
+   // Popover layers consume Escape before the chat-zone binding returns focus.
+   useLayer("composer-picker", { active: pickerOpen, onEscape: () => setPickerOpen(false) });
+@@ -199,18 +221,29 @@ export function Composer({
+ 
+   async function submit(e?: FormEvent, interrupt = false) {
+     e?.preventDefault();
+-    if (sendDisabled) return;
++    if (sendDisabled || submitting.current) return;
++    submitting.current = true;
+     const submittedText = text;
+     const submittedAttachments = attachments;
+     const submittedRevision = draftRevision.current;
+     const files = attachments.length > 0 ? attachments : undefined;
+     setSubmitError(null);
++    setRouteNotice(null);
+     setText("");
+     setAttachments([]);
+     composerDraftStore.clear(threadId);
+     setAttachError(null);
+     try {
+-      if (interrupt && onSteerNow) {
++      if (externalRecipient) {
++        const accepted = await client.sendKiroHandoff({
++          target: recipient,
++          message: submittedText,
++          threadId,
++          requestId: crypto.randomUUID(),
++        });
++        setRouteNotice(`Sent to ${accepted.target} · ${accepted.handoffId}. Response will return to this inbox.`);
++        onHandoffAccepted?.(accepted.threadId, accepted.target);
++      } else if (interrupt && onSteerNow) {
+         await onSteerNow(submittedText, model || undefined, files);
+       } else {
+         await onSend(submittedText, model || undefined, files);
+@@ -224,6 +257,8 @@ export function Composer({
+         );
+       }
+       setSubmitError(err instanceof Error ? err.message : "message send failed");
++    } finally {
++      submitting.current = false;
+     }
+   }
+ 
+@@ -345,7 +380,7 @@ export function Composer({
+         onDragLeave={onDragLeave}
+         onDrop={onDrop}
+       >
+-        {(attachments.length > 0 || uploading > 0 || attachError || submitError) && (
++        {(attachments.length > 0 || uploading > 0 || attachError || submitError || routeNotice) && (
+           <div className="composer-attachments" aria-label="Attachments">
+             {attachments.map((a) => (
+               <AttachmentChip
+@@ -371,6 +406,11 @@ export function Composer({
+                 {submitError}
+               </span>
+             )}
++            {routeNotice && (
++              <span className="composer-route-notice" role="status">
++                {routeNotice}
++              </span>
++            )}
+           </div>
+         )}
+         <textarea
+@@ -386,7 +426,9 @@ export function Composer({
+           onCompositionStart={() => (composing.current = true)}
+           onCompositionEnd={() => (composing.current = false)}
+           placeholder={
+-            interrupted
++            externalRecipient
++              ? `Message ${recipient}…`
++              : interrupted
+               ? "Queue until approval is resolved…"
+               : streaming
+               ? "Steer… Enter to queue, ⌘/Ctrl+Enter to send now"
+@@ -419,7 +461,29 @@ export function Composer({
+               }}
+             />
+ 
+-            <div className="model-picker" ref={pickerWrapRef}>
++            <label className="composer-recipient">
++              <AtSign size={15} aria-hidden />
++              <span>To</span>
++              <select
++                aria-label="Message recipient"
++                value={recipient}
++                disabled={Boolean(streaming) || Boolean(interrupted)}
++                onChange={(event) => {
++                  recipientTouched.current = true;
++                  setRecipient(event.target.value);
++                  setRouteNotice(null);
++                }}
++              >
++                <option value="pizza-bot">Pizza Bot</option>
++                {kiroAgents.map((agent) => (
++                  <option key={agent.name} value={agent.name} title={agent.description}>
++                    {agent.name}
++                  </option>
++                ))}
++              </select>
++            </label>
++
++            {!externalRecipient && <div className="model-picker" ref={pickerWrapRef}>
+               <button
+                 type="button"
+                 className="model-picker-trigger"
+@@ -499,7 +563,7 @@ export function Composer({
+                   </ul>
+                 </div>
+               )}
+-            </div>
++            </div>}
+ 
+           </div>
+ 
+diff --git a/apps/web/src/components/Sidebar.tsx b/apps/web/src/components/Sidebar.tsx
+index 78de924..8e36ca7 100644
+--- a/apps/web/src/components/Sidebar.tsx
++++ b/apps/web/src/components/Sidebar.tsx
+@@ -17,8 +17,11 @@ import {
+   Pencil,
+   Check,
+   SlidersHorizontal,
++  Hourglass,
++  CheckSquare,
+ } from "lucide-react";
+-import type { ApiClient, FolderInfo, ThreadInfo, SearchHit } from "@/api-client";
++import type { ApiClient, FolderInfo, KiroPendingHandoff, ThreadInfo, SearchHit } from "@/api-client";
++import { awaitingByThread, awaitingLabel } from "../projection/awaiting.js";
+ import { useKnownThreadIds, useRunningThreadIds } from "../use-thread-slice.js";
+ import { datePeriod, PERIOD_ORDER, relativeTime, type DatePeriod } from "../lib/conversation.js";
+ import { selectionAfterDelete } from "../lib/list-nav.js";
+@@ -67,7 +70,10 @@ export interface SidebarProps {
+   onFocusComposer?: () => void;
+ }
+ 
+-type Filter = "all" | "unread" | "action" | "unfiled" | `folder:${string}`;
++type Filter = "all" | "unread" | "awaiting" | "action" | "unfiled" | `folder:${string}`;
++
++/** Only polled while something is outstanding, so an idle inbox costs nothing. */
++const AWAITING_POLL_MS = 30_000;
+ 
+ type FolderEditor =
+   | { mode: "create" }
+@@ -92,6 +98,7 @@ export function Sidebar({
+   const localRunning = useRunningThreadIds();
+   const [threads, setThreads] = useState<ThreadInfo[]>([]);
+   const [folders, setFolders] = useState<FolderInfo[]>([]);
++  const [pendingHandoffs, setPendingHandoffs] = useState<KiroPendingHandoff[]>([]);
+   const [query, setQuery] = useState("");
+   const [hits, setHits] = useState<SearchHit[]>([]);
+   const [searching, setSearching] = useState(false);
+@@ -105,6 +112,9 @@ export function Sidebar({
+   const [confirmFolderDelete, setConfirmFolderDelete] = useState<FolderInfo | null>(null);
+   const [folderBusy, setFolderBusy] = useState(false);
+   const [folderError, setFolderError] = useState<string | null>(null);
++  const [selectMode, setSelectMode] = useState(false);
++  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
++  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+   const [swipedThreadId, setSwipedThreadId] = useState<string | null>(null);
+   const threadListRef = useRef<HTMLDivElement | null>(null);
+   const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
+@@ -130,11 +140,14 @@ export function Sidebar({
+   );
+ 
+   const refresh = useCallback(async () => {
+-    const [threadList, folderList] = await Promise.all([
++    // The bridge is an optional companion, so a missing endpoint must not cost the thread list.
++    const [threadList, folderList, pendingList] = await Promise.all([
+       refreshThreads(),
+       client.listFolders(),
++      client.listPendingKiroHandoffs().catch(() => [] as KiroPendingHandoff[]),
+     ]);
+     setFolders(folderList);
++    setPendingHandoffs(pendingList);
+     return threadList;
+   }, [client, refreshThreads]);
+ 
+@@ -326,6 +339,31 @@ export function Sidebar({
+     return [...known.values()];
+   }, [threads, openedThreads, localKnown, activeThreadId, threadTitles]);
+ 
++  const awaiting = useMemo(() => awaitingByThread(pendingHandoffs, rows), [pendingHandoffs, rows]);
++
++  // A handoff can sit outstanding with nothing else changing on the thread, so the ThreadChange
++  // stream never fires and neither the wait time nor the delivery would be noticed.
++  useEffect(() => {
++    if (pendingHandoffs.length === 0) return;
++    const timer = setInterval(() => {
++      void refresh().catch((error) => console.error("refresh pending handoffs", error));
++    }, AWAITING_POLL_MS);
++    return () => clearInterval(timer);
++  }, [pendingHandoffs.length, refresh]);
++
++  // The bridge writes the reply straight into graph state, so no stream frame announces it and the
++  // open pane would keep showing only the request. The wait ending is the cue that one arrived.
++  const wasAwaitingActive = useRef(false);
++  useEffect(() => {
++    const isAwaiting = activeThreadId ? awaiting.has(activeThreadId) : false;
++    if (wasAwaitingActive.current && !isAwaiting && activeThreadId) {
++      void protocolStreamStore.rehydrate(activeThreadId).catch(() => {
++        // The pane surfaces hydration errors; a later refresh retries.
++      });
++    }
++    wasAwaitingActive.current = isAwaiting;
++  }, [activeThreadId, awaiting]);
++
+   const isUnread = useCallback(
+     (t: ThreadInfo) => t.unread && t.threadId !== activeThreadId,
+     [activeThreadId],
+@@ -335,17 +373,25 @@ export function Sidebar({
+     ? filter.slice("folder:".length)
+     : undefined;
+ 
++  // Mail semantics: the default view is the triage surface, and what you sent does not sit in it.
++  // Sent conversations live in the Sent folder row and in the Waiting segment until the reply
++  // pulls them back to the inbox.
++  const sentFolderId = folders.find((folder) => folder.name === "Sent")?.folderId;
++
+   const visibleRows =
+     filter === "unread"
+       ? rows.filter(isUnread)
+-      : filter === "action"
+-        ? rows.filter((t) => t.awaitingAction)
+-        : filter === "unfiled"
+-          ? rows.filter((t) => !t.folderId)
+-          : selectedFolderId
+-            ? rows.filter((t) => t.folderId === selectedFolderId)
+-        : rows;
+-
++      : filter === "awaiting"
++        ? rows.filter((t) => awaiting.has(t.threadId))
++        : filter === "action"
++          ? rows.filter((t) => t.awaitingAction)
++          : filter === "unfiled"
++            ? rows.filter((t) => !t.folderId)
++            : selectedFolderId
++              ? rows.filter((t) => t.folderId === selectedFolderId)
++        : rows.filter((t) => !sentFolderId || t.folderId !== sentFolderId);
++
++  const awaitingCount = awaiting.size;
+   const unreadCount = useMemo(() => rows.filter(isUnread).length, [rows, isUnread]);
+   const actionCount = useMemo(
+     () => rows.filter((t) => t.awaitingAction).length,
+@@ -447,6 +493,48 @@ export function Sidebar({
+     ),
+   );
+ 
++  const exitSelectMode = useCallback(() => {
++    setSelectMode(false);
++    setSelectedIds(new Set());
++  }, []);
++
++  const toggleSelected = useCallback((threadId: string) => {
++    setSelectedIds((prev) => {
++      const next = new Set(prev);
++      if (next.has(threadId)) next.delete(threadId);
++      else next.add(threadId);
++      return next;
++    });
++  }, []);
++
++  const onBulkDeleteConfirm = useCallback(async () => {
++    const ids = [...selectedIds];
++    setConfirmBulkDelete(false);
++    let failed = 0;
++    // Sequential on purpose: each delete tears down a checkpointed thread, and a burst of
++    // parallel deletes is how a local SQLite store ends up contended for no user-visible gain.
++    for (const id of ids) {
++      try {
++        await client.deleteThread(id);
++        onDeleted(id);
++      } catch (err) {
++        failed += 1;
++        console.error("bulk delete failed", id, err);
++      }
++    }
++    exitSelectMode();
++    await refresh();
++    notify(
++      failed
++        ? {
++            title: `Deleted ${ids.length - failed} of ${ids.length} conversations`,
++            description: "The rest failed; they are still in the list.",
++            tone: "error",
++          }
++        : { title: `${ids.length} conversation${ids.length === 1 ? "" : "s"} deleted`, tone: "success" },
++    );
++  }, [selectedIds, client, onDeleted, exitSelectMode, refresh, notify]);
++
+   const onDeleteConfirm = useCallback(async () => {
+     const t = confirmDelete;
+     if (!t) return;
+@@ -535,6 +623,14 @@ export function Sidebar({
+             Unread
+             {unreadCount > 0 && <span className="segmented-count">{unreadCount}</span>}
+           </button>
++          <button
++            className={`segmented-btn${filter === "awaiting" ? " active" : ""}`}
++            title="Sent to an agent, no reply yet"
++            onClick={() => setFilter("awaiting")}
++          >
++            Waiting
++            {awaitingCount > 0 && <span className="segmented-count">{awaitingCount}</span>}
++          </button>
+           <button
+             className={`segmented-btn${filter === "action" ? " active" : ""}`}
+             onClick={() => setFilter("action")}
+@@ -543,6 +639,15 @@ export function Sidebar({
+             {actionCount > 0 && <span className="segmented-count">{actionCount}</span>}
+           </button>
+         </div>
++        <button
++          className={`sidebar-filter-more${selectMode ? " active" : ""}`}
++          title={selectMode ? "Exit selection" : "Select conversations"}
++          aria-label={selectMode ? "Exit selection" : "Select conversations"}
++          aria-pressed={selectMode}
++          onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
++        >
++          <CheckSquare size={15} />
++        </button>
+         <button
+           className={`sidebar-filter-more${foldersVisible ? " active" : ""}`}
+           title={foldersVisible ? "Hide folder filters" : "Show folder filters"}
+@@ -554,6 +659,24 @@ export function Sidebar({
+         </button>
+       </div>
+ 
++      {selectMode && (
++        <div className="sidebar-bulkbar" role="toolbar" aria-label="Bulk actions">
++          <span className="sidebar-bulkbar-count">
++            {selectedIds.size} selected
++          </span>
++          <button
++            className="sidebar-bulkbar-delete"
++            disabled={selectedIds.size === 0}
++            onClick={() => setConfirmBulkDelete(true)}
++          >
++            <Trash2 size={13} />
++            Delete
++          </button>
++          <button className="sidebar-bulkbar-cancel" onClick={exitSelectMode}>
++            Cancel
++          </button>
++        </div>
++      )}
+       {foldersVisible && (
+         <div className="sidebar-folders">
+           <div className="sidebar-folders-head">
+@@ -696,6 +819,7 @@ export function Sidebar({
+                         const running = localRunning.includes(t.threadId);
+                         const unread = isUnread(t);
+                         const needsAction = t.awaitingAction;
++                        const waiting = awaiting.get(t.threadId);
+                         return (
+                           <li
+                             key={t.threadId}
+@@ -703,7 +827,9 @@ export function Sidebar({
+                             ref={(element) => listNavigation.setRowElement(t.threadId, element)}
+                             role="option"
+                             aria-selected={t.threadId === activeThreadId}
+-                            onClick={() => listNavigation.selectItem(t.threadId)}
++                            onClick={() =>
++                              selectMode ? toggleSelected(t.threadId) : listNavigation.selectItem(t.threadId)
++                            }
+                           >
+                             <SwipeToDelete
+                               open={swipedThreadId === t.threadId}
+@@ -715,8 +841,18 @@ export function Sidebar({
+                             >
+                               {/* A div permits sibling pin/delete buttons without invalid button nesting. */}
+                               <div
+-                                className={`thread-row${t.threadId === activeThreadId ? " active" : ""}${unread ? " unread" : ""}`}
++                                className={`thread-row${t.threadId === activeThreadId ? " active" : ""}${unread ? " unread" : ""}${waiting ? " awaiting-reply" : ""}${selectMode && selectedIds.has(t.threadId) ? " selected-for-delete" : ""}`}
+                               >
++                                {selectMode && (
++                                  <input
++                                    type="checkbox"
++                                    className="thread-select-box"
++                                    checked={selectedIds.has(t.threadId)}
++                                    onChange={() => toggleSelected(t.threadId)}
++                                    onClick={(event) => event.stopPropagation()}
++                                    aria-label={`Select ${t.title}`}
++                                  />
++                                )}
+                                 <span className="thread-main">
+                                   <span className="thread-line1">
+                                     {running && <Pen size={13} className="thread-running-icon" />}
+@@ -728,6 +864,12 @@ export function Sidebar({
+                                       {running ? "now" : relativeTime(t.lastActivityAt)}
+                                     </span>
+                                   </span>
++                                  {waiting && (
++                                    <span className="thread-awaiting" role="status">
++                                      <Hourglass size={11} aria-hidden />
++                                      {awaitingLabel(waiting, relativeTime)}
++                                    </span>
++                                  )}
+                                   {t.lastMessage && (
+                                     <span className="thread-preview">{t.lastMessage}</span>
+                                   )}
+@@ -817,6 +959,16 @@ export function Sidebar({
+         )}
+       </div>
+ 
++      {confirmBulkDelete && (
++        <ConfirmationDialog
++          title={`Delete ${selectedIds.size} conversation${selectedIds.size === 1 ? "" : "s"}?`}
++          message="They will be permanently deleted. This can't be undone."
++          confirmLabel="Delete"
++          destructive
++          onCancel={() => setConfirmBulkDelete(false)}
++          onConfirm={() => void onBulkDeleteConfirm()}
++        />
++      )}
+       {confirmDelete && (
+         <ConfirmationDialog
+           title="Delete conversation?"
+diff --git a/apps/web/src/components/SidebarResizer.test.tsx b/apps/web/src/components/SidebarResizer.test.tsx
+new file mode 100644
+index 0000000..94d4c27
+--- /dev/null
++++ b/apps/web/src/components/SidebarResizer.test.tsx
+@@ -0,0 +1,36 @@
++import { renderToStaticMarkup } from "react-dom/server";
++import { describe, expect, it, vi } from "vitest";
++import { SidebarResizer } from "./SidebarResizer.js";
++
++const noop = vi.fn();
++
++function render(width: number): string {
++  return renderToStaticMarkup(
++    <SidebarResizer
++      layout={{ width, expandedWidth: width === 0 ? 480 : width }}
++      onResize={noop}
++      onNudge={noop}
++      onToggle={noop}
++    />,
++  );
++}
++
++describe("SidebarResizer", () => {
++  it("is a focusable separator carrying the current width", () => {
++    const html = render(480);
++    expect(html).toContain('role="separator"');
++    expect(html).toContain('aria-orientation="vertical"');
++    expect(html).toContain('aria-valuenow="480"');
++    expect(html).toContain('tabindex="0"');
++  });
++
++  it("stays visible and says how to get the list back when collapsed", () => {
++    const html = render(0);
++    expect(html).toContain('data-collapsed="true"');
++    expect(html).toContain("Double-click to show the conversation list");
++  });
++
++  it("offers collapse as the double-click affordance when open", () => {
++    expect(render(320)).toContain("Drag to resize, double-click to collapse");
++  });
++});
+diff --git a/apps/web/src/components/SidebarResizer.tsx b/apps/web/src/components/SidebarResizer.tsx
+new file mode 100644
+index 0000000..856d7c8
+--- /dev/null
++++ b/apps/web/src/components/SidebarResizer.tsx
+@@ -0,0 +1,93 @@
++import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
++import {
++  SIDEBAR_KEYBOARD_STEP,
++  SIDEBAR_MAX_WIDTH,
++  widthFromDrag,
++  type DragOrigin,
++  type SidebarLayout,
++} from "../lib/sidebar-width.js";
++
++export interface SidebarResizerProps {
++  layout: SidebarLayout;
++  onResize: (width: number) => void;
++  onNudge: (delta: number) => void;
++  onToggle: () => void;
++}
++
++/** The grab area between the conversation list and the reading pane.
++ *
++ *  Pointer capture, not window listeners: the pointer leaves this 5px strip on
++ *  the first fast drag, and capture keeps the events coming without a global
++ *  mousemove handler to leak. Keyboard works too, because a 5px target is not
++ *  the only way anyone should be able to size a pane. */
++export function SidebarResizer({ layout, onResize, onNudge, onToggle }: SidebarResizerProps) {
++  const [dragging, setDragging] = useState(false);
++  const origin = useRef<DragOrigin | null>(null);
++  const collapsed = layout.width === 0;
++
++  const onPointerDown = useCallback(
++    (event: ReactPointerEvent<HTMLDivElement>) => {
++      if (event.button !== 0) return;
++      event.preventDefault();
++      event.currentTarget.setPointerCapture(event.pointerId);
++      origin.current = { x: event.clientX, width: layout.width };
++      setDragging(true);
++    },
++    [layout.width],
++  );
++
++  const onPointerMove = useCallback(
++    (event: ReactPointerEvent<HTMLDivElement>) => {
++      const from = origin.current;
++      if (!from) return;
++      onResize(widthFromDrag(from, event.clientX));
++    },
++    [onResize],
++  );
++
++  const endDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
++    if (!origin.current) return;
++    origin.current = null;
++    setDragging(false);
++    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
++      event.currentTarget.releasePointerCapture(event.pointerId);
++    }
++  }, []);
++
++  return (
++    <div
++      role="separator"
++      aria-orientation="vertical"
++      aria-label="Resize the conversation list"
++      aria-valuenow={layout.width}
++      aria-valuemin={0}
++      aria-valuemax={SIDEBAR_MAX_WIDTH}
++      tabIndex={0}
++      title={
++        collapsed
++          ? "Double-click to show the conversation list"
++          : "Drag to resize, double-click to collapse"
++      }
++      className={`sidebar-resizer${dragging ? " dragging" : ""}`}
++      data-collapsed={collapsed ? "true" : undefined}
++      onPointerDown={onPointerDown}
++      onPointerMove={onPointerMove}
++      onPointerUp={endDrag}
++      onPointerCancel={endDrag}
++      onDoubleClick={onToggle}
++      onKeyDown={(event) => {
++        const step = event.shiftKey ? SIDEBAR_KEYBOARD_STEP * 4 : SIDEBAR_KEYBOARD_STEP;
++        if (event.key === "ArrowLeft") {
++          event.preventDefault();
++          onNudge(-step);
++        } else if (event.key === "ArrowRight") {
++          event.preventDefault();
++          onNudge(step);
++        } else if (event.key === "Enter" || event.key === " ") {
++          event.preventDefault();
++          onToggle();
++        }
++      }}
++    />
++  );
++}
+diff --git a/apps/web/src/embedded-theme.test.ts b/apps/web/src/embedded-theme.test.ts
+new file mode 100644
+index 0000000..de01f04
+--- /dev/null
++++ b/apps/web/src/embedded-theme.test.ts
+@@ -0,0 +1,45 @@
++import { describe, expect, it } from "vitest";
++import {
++  DASHBOARD_THEME_MESSAGE,
++  dashboardOriginFromReferrer,
++  embeddedTheme,
++  isAllowedDashboardOrigin,
++} from "./embedded-theme.js";
++
++describe("embedded dashboard theme", () => {
++  it("accepts only the loopback Agent Dashboard origins", () => {
++    expect(isAllowedDashboardOrigin("http://127.0.0.1:7780")).toBe(true);
++    expect(isAllowedDashboardOrigin("http://localhost:7780")).toBe(true);
++    expect(isAllowedDashboardOrigin("http://127.0.0.1:7781")).toBe(false);
++    expect(isAllowedDashboardOrigin("https://evil.example")).toBe(false);
++  });
++
++  it("accepts only explicit light or dark messages", () => {
++    expect(
++      embeddedTheme({
++        origin: "http://127.0.0.1:7780",
++        data: { type: DASHBOARD_THEME_MESSAGE, theme: "light" },
++      }),
++    ).toBe("light");
++    expect(
++      embeddedTheme({
++        origin: "http://127.0.0.1:7780",
++        data: { type: DASHBOARD_THEME_MESSAGE, theme: "system" },
++      }),
++    ).toBeUndefined();
++    expect(
++      embeddedTheme({
++        origin: "https://evil.example",
++        data: { type: DASHBOARD_THEME_MESSAGE, theme: "dark" },
++      }),
++    ).toBeUndefined();
++  });
++
++  it("targets readiness only to a validated Dashboard referrer", () => {
++    expect(dashboardOriginFromReferrer("http://127.0.0.1:7780/pizza")).toBe(
++      "http://127.0.0.1:7780",
++    );
++    expect(dashboardOriginFromReferrer("https://evil.example/embed")).toBeUndefined();
++    expect(dashboardOriginFromReferrer("not a URL")).toBeUndefined();
++  });
++});
+diff --git a/apps/web/src/embedded-theme.ts b/apps/web/src/embedded-theme.ts
+new file mode 100644
+index 0000000..e335442
+--- /dev/null
++++ b/apps/web/src/embedded-theme.ts
+@@ -0,0 +1,52 @@
++import { applyTheme, THEME_STORAGE_KEY, type ResolvedTheme } from "./theme-storage.js";
++
++export const DASHBOARD_THEME_MESSAGE = "agent-dashboard-theme";
++
++export function isAllowedDashboardOrigin(origin: string): boolean {
++  return origin === "http://127.0.0.1:7780" || origin === "http://localhost:7780";
++}
++
++export function embeddedTheme(event: Pick<MessageEvent, "origin" | "data">): ResolvedTheme | undefined {
++  if (!isAllowedDashboardOrigin(event.origin)) return undefined;
++  if (!event.data || event.data.type !== DASHBOARD_THEME_MESSAGE) return undefined;
++  return event.data.theme === "light" || event.data.theme === "dark" ? event.data.theme : undefined;
++}
++
++export function dashboardOriginFromReferrer(referrer: string): string | undefined {
++  try {
++    const origin = new URL(referrer).origin;
++    return isAllowedDashboardOrigin(origin) ? origin : undefined;
++  } catch {
++    return undefined;
++  }
++}
++
++export function installEmbeddedThemeBridge(): () => void {
++  if (window.parent === window) return () => undefined;
++  let forced: ResolvedTheme | undefined;
++
++  const apply = (theme: ResolvedTheme) => {
++    forced = theme;
++    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
++    applyTheme(theme);
++  };
++  const onMessage = (event: MessageEvent) => {
++    const theme = embeddedTheme(event);
++    if (theme) apply(theme);
++  };
++  window.addEventListener("message", onMessage);
++
++  const observer = new MutationObserver(() => {
++    if (!forced) return;
++    const current = document.documentElement.classList.contains("light") ? "light" : "dark";
++    if (current !== forced) queueMicrotask(() => applyTheme(forced!));
++  });
++  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
++  const parentOrigin = dashboardOriginFromReferrer(document.referrer);
++  if (parentOrigin) window.parent.postMessage({ type: "pizza-theme-ready" }, parentOrigin);
++
++  return () => {
++    observer.disconnect();
++    window.removeEventListener("message", onMessage);
++  };
++}
+diff --git a/apps/web/src/lib/sidebar-width.test.ts b/apps/web/src/lib/sidebar-width.test.ts
+new file mode 100644
+index 0000000..a81a033
+--- /dev/null
++++ b/apps/web/src/lib/sidebar-width.test.ts
+@@ -0,0 +1,212 @@
++import { describe, expect, it } from "vitest";
++import {
++  clampWidth,
++  defaultLayout,
++  isCollapsed,
++  maxWidthFor,
++  normalize,
++  nudge,
++  parseLayout,
++  readLayout,
++  resizeTo,
++  SIDEBAR_COLLAPSE_AT,
++  SIDEBAR_DEFAULT_WIDTH,
++  SIDEBAR_LAYOUT_STORAGE_KEY,
++  SIDEBAR_MAX_WIDTH,
++  SIDEBAR_MIN_WIDTH,
++  toggleCollapsed,
++  widthFromDrag,
++  writeLayout,
++  type SidebarLayout,
++} from "./sidebar-width.js";
++
++const WIDE = 1920;
++
++class MemoryStorage {
++  private readonly values = new Map<string, string>();
++
++  getItem(key: string): string | null {
++    return this.values.get(key) ?? null;
++  }
++
++  setItem(key: string, value: string): void {
++    this.values.set(key, value);
++  }
++}
++
++class HostileStorage {
++  getItem(): string | null {
++    throw new Error("access denied");
++  }
++
++  setItem(): void {
++    throw new Error("quota exceeded");
++  }
++}
++
++describe("maxWidthFor", () => {
++  it("never exceeds the absolute ceiling on a wide screen", () => {
++    expect(maxWidthFor(5120)).toBe(SIDEBAR_MAX_WIDTH);
++  });
++
++  it("gives up at most half of a narrow window", () => {
++    expect(maxWidthFor(1280)).toBe(640);
++  });
++
++  it("keeps the band valid when half the window is below the minimum", () => {
++    expect(maxWidthFor(400)).toBe(SIDEBAR_MIN_WIDTH);
++  });
++});
++
++describe("clampWidth", () => {
++  it("keeps a width inside the band", () => {
++    expect(clampWidth(480, WIDE)).toBe(480);
++  });
++
++  it("raises a width between the threshold and the minimum", () => {
++    expect(clampWidth(SIDEBAR_COLLAPSE_AT + 1, WIDE)).toBe(SIDEBAR_MIN_WIDTH);
++  });
++
++  it("collapses at or below the threshold", () => {
++    expect(clampWidth(SIDEBAR_COLLAPSE_AT, WIDE)).toBe(0);
++    expect(clampWidth(-200, WIDE)).toBe(0);
++  });
++
++  it("caps against the viewport, not only the ceiling", () => {
++    expect(clampWidth(700, 1200)).toBe(600);
++  });
++
++  it("rounds fractional drag positions", () => {
++    expect(clampWidth(327.6, WIDE)).toBe(328);
++  });
++
++  it("falls back to collapsed-free defaults on a non-number", () => {
++    expect(clampWidth(Number.NaN, WIDE)).toBe(0);
++  });
++});
++
++describe("normalize", () => {
++  it("defaults a missing preference to the upstream width", () => {
++    expect(normalize(undefined, WIDE)).toEqual({
++      width: SIDEBAR_DEFAULT_WIDTH,
++      expandedWidth: SIDEBAR_DEFAULT_WIDTH,
++    });
++  });
++
++  it("shrinks a stored width that no longer fits the window", () => {
++    expect(normalize({ width: 700, expandedWidth: 700 }, 1200)).toEqual({
++      width: 600,
++      expandedWidth: 600,
++    });
++  });
++
++  it("keeps the restore width while collapsed", () => {
++    expect(normalize({ width: 0, expandedWidth: 520 }, WIDE)).toEqual({
++      width: 0,
++      expandedWidth: 520,
++    });
++  });
++
++  it("never stores 0 as the restore width", () => {
++    expect(normalize({ width: 0, expandedWidth: 0 }, WIDE).expandedWidth).toBe(
++      SIDEBAR_DEFAULT_WIDTH,
++    );
++  });
++});
++
++describe("resizeTo", () => {
++  it("moves both width and restore width together", () => {
++    expect(resizeTo(defaultLayout(WIDE), 500, WIDE)).toEqual({ width: 500, expandedWidth: 500 });
++  });
++
++  it("collapsing by drag preserves what to restore", () => {
++    const layout: SidebarLayout = { width: 500, expandedWidth: 500 };
++    expect(resizeTo(layout, 20, WIDE)).toEqual({ width: 0, expandedWidth: 500 });
++  });
++});
++
++describe("toggleCollapsed", () => {
++  it("round-trips without losing the chosen width", () => {
++    const chosen: SidebarLayout = { width: 460, expandedWidth: 460 };
++    const collapsed = toggleCollapsed(chosen, WIDE);
++    expect(isCollapsed(collapsed)).toBe(true);
++    expect(toggleCollapsed(collapsed, WIDE)).toEqual(chosen);
++  });
++
++  it("expands into the current window when the remembered width no longer fits", () => {
++    const collapsed: SidebarLayout = { width: 0, expandedWidth: 700 };
++    expect(toggleCollapsed(collapsed, 1200)).toEqual({ width: 600, expandedWidth: 600 });
++  });
++});
++
++describe("nudge", () => {
++  it("steps in both directions", () => {
++    expect(nudge({ width: 400, expandedWidth: 400 }, 16, WIDE).width).toBe(416);
++    expect(nudge({ width: 400, expandedWidth: 400 }, -16, WIDE).width).toBe(384);
++  });
++
++  it("expanding from collapsed lands on the remembered width, not on one step", () => {
++    expect(nudge({ width: 0, expandedWidth: 480 }, 16, WIDE)).toEqual({
++      width: 480,
++      expandedWidth: 480,
++    });
++  });
++
++  it("shrinking while collapsed is a no-op", () => {
++    const collapsed: SidebarLayout = { width: 0, expandedWidth: 480 };
++    expect(nudge(collapsed, -16, WIDE)).toBe(collapsed);
++  });
++
++  it("jams at the minimum instead of collapsing, so a held key cannot hide the list", () => {
++    expect(nudge({ width: SIDEBAR_MIN_WIDTH, expandedWidth: SIDEBAR_MIN_WIDTH }, -16, WIDE)).toEqual(
++      { width: SIDEBAR_MIN_WIDTH, expandedWidth: SIDEBAR_MIN_WIDTH },
++    );
++  });
++});
++
++describe("widthFromDrag", () => {
++  it("follows the pointer one-to-one to the right", () => {
++    expect(widthFromDrag({ x: 320, width: 320 }, 500)).toBe(500);
++  });
++
++  it("follows the pointer to the left", () => {
++    expect(widthFromDrag({ x: 320, width: 320 }, 260)).toBe(260);
++  });
++
++  it("a drag that starts collapsed measures from zero, so it needs a real pull", () => {
++    const asked = widthFromDrag({ x: 60, width: 0 }, 160);
++    expect(asked).toBe(100);
++    expect(clampWidth(asked, WIDE)).toBe(0);
++    expect(clampWidth(widthFromDrag({ x: 60, width: 0 }, 400), WIDE)).toBe(340);
++  });
++});
++
++describe("parseLayout", () => {
++  it("survives garbage, empty and wrong-shaped values", () => {
++    for (const raw of [null, "", "not json", "[]", "7", '{"width":"wide"}']) {
++      expect(parseLayout(raw, WIDE)).toEqual(defaultLayout(WIDE));
++    }
++  });
++
++  it("reads a stored preference back", () => {
++    expect(parseLayout('{"width":520,"expandedWidth":520}', WIDE)).toEqual({
++      width: 520,
++      expandedWidth: 520,
++    });
++  });
++});
++
++describe("storage round trip", () => {
++  it("writes under the documented key and reads the same layout back", () => {
++    const storage = new MemoryStorage();
++    writeLayout(storage, { width: 0, expandedWidth: 520 });
++    expect(storage.getItem(SIDEBAR_LAYOUT_STORAGE_KEY)).toBe('{"width":0,"expandedWidth":520}');
++    expect(readLayout(storage, WIDE)).toEqual({ width: 0, expandedWidth: 520 });
++  });
++
++  it("degrades to the default when storage itself throws", () => {
++    const storage = new HostileStorage();
++    expect(() => writeLayout(storage, defaultLayout(WIDE))).not.toThrow();
++    expect(readLayout(storage, WIDE)).toEqual(defaultLayout(WIDE));
++  });
++});
+diff --git a/apps/web/src/lib/sidebar-width.ts b/apps/web/src/lib/sidebar-width.ts
+new file mode 100644
+index 0000000..234ce96
+--- /dev/null
++++ b/apps/web/src/lib/sidebar-width.ts
+@@ -0,0 +1,139 @@
++/** Width of the inbox conversation list, as a user preference.
++ *
++ *  Upstream pins the pane at 320px, which truncates most agent subjects. The
++ *  preference is one number because the list is one pane: `width` 0 means
++ *  collapsed, and `expandedWidth` remembers what to come back to, so expanding
++ *  after a reload does not silently reset to the default.
++ *
++ *  Every value is clamped against the CURRENT viewport rather than stored
++ *  pre-clamped: the same profile opens on a 2560px monitor and on a 1280px
++ *  laptop, and a width that is comfortable on one would swallow the other.
++ */
++
++export const SIDEBAR_LAYOUT_STORAGE_KEY = "pizza-sidebar-layout";
++export const SIDEBAR_DEFAULT_WIDTH = 320;
++export const SIDEBAR_MIN_WIDTH = 240;
++export const SIDEBAR_MAX_WIDTH = 720;
++/** A drag released below this collapses the pane, as a pane handle usually does. */
++export const SIDEBAR_COLLAPSE_AT = 160;
++/** Arrow-key step on the handle. Shift multiplies it in the component. */
++export const SIDEBAR_KEYBOARD_STEP = 16;
++
++export interface SidebarLayout {
++  /** Rendered width in px. 0 means collapsed. */
++  width: number;
++  /** Width to restore on expand. Never 0. */
++  expandedWidth: number;
++}
++
++export type SidebarStorage = Pick<Storage, "getItem" | "setItem">;
++
++export function isCollapsed(layout: SidebarLayout): boolean {
++  return layout.width === 0;
++}
++
++/** Widest the pane may get on this viewport. Half the window keeps the reading
++ *  pane usable, and MIN wins on a narrow window so the band never inverts. */
++export function maxWidthFor(viewportWidth: number): number {
++  const half = Math.floor((Number.isFinite(viewportWidth) ? viewportWidth : 0) / 2);
++  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, half));
++}
++
++/** Snaps to collapsed below the threshold, otherwise into [MIN, max(viewport)]. */
++export function clampWidth(width: number, viewportWidth: number): number {
++  if (!Number.isFinite(width) || width <= SIDEBAR_COLLAPSE_AT) return 0;
++  return Math.min(Math.max(Math.round(width), SIDEBAR_MIN_WIDTH), maxWidthFor(viewportWidth));
++}
++
++function clampExpanded(value: unknown, viewportWidth: number): number {
++  const max = maxWidthFor(viewportWidth);
++  if (typeof value !== "number" || !Number.isFinite(value) || value <= SIDEBAR_COLLAPSE_AT) {
++    return Math.min(SIDEBAR_DEFAULT_WIDTH, max);
++  }
++  return Math.min(Math.max(Math.round(value), SIDEBAR_MIN_WIDTH), max);
++}
++
++export function defaultLayout(viewportWidth: number): SidebarLayout {
++  const width = clampExpanded(SIDEBAR_DEFAULT_WIDTH, viewportWidth);
++  return { width, expandedWidth: width };
++}
++
++/** Brings any shape - a stored object, a stale state, a narrower window - back
++ *  into the band without losing the collapsed/expanded distinction. */
++export function normalize(
++  layout: Partial<SidebarLayout> | null | undefined,
++  viewportWidth: number,
++): SidebarLayout {
++  const expandedWidth = clampExpanded(layout?.expandedWidth, viewportWidth);
++  const raw = layout?.width;
++  if (typeof raw !== "number" || !Number.isFinite(raw)) {
++    return { width: expandedWidth, expandedWidth };
++  }
++  const width = clampWidth(raw, viewportWidth);
++  return { width, expandedWidth: width === 0 ? expandedWidth : width };
++}
++
++export function resizeTo(layout: SidebarLayout, width: number, viewportWidth: number): SidebarLayout {
++  const next = clampWidth(width, viewportWidth);
++  return next === 0
++    ? { width: 0, expandedWidth: layout.expandedWidth }
++    : { width: next, expandedWidth: next };
++}
++
++export function toggleCollapsed(layout: SidebarLayout, viewportWidth: number): SidebarLayout {
++  return isCollapsed(layout)
++    ? resizeTo(layout, layout.expandedWidth, viewportWidth)
++    : { width: 0, expandedWidth: layout.expandedWidth };
++}
++
++/** Keyboard resize. Expanding from collapsed jumps straight to the remembered
++ *  width - stepping 16px at a time out of 0 would take ten presses to show
++ *  anything, because everything below the threshold is still collapsed. */
++export function nudge(layout: SidebarLayout, delta: number, viewportWidth: number): SidebarLayout {
++  if (isCollapsed(layout)) {
++    return delta > 0 ? resizeTo(layout, layout.expandedWidth, viewportWidth) : layout;
++  }
++  return resizeTo(layout, layout.width + delta, viewportWidth);
++}
++
++export interface DragOrigin {
++  /** Pointer x where the drag started. */
++  x: number;
++  /** Pane width when the drag started. 0 when it started collapsed. */
++  width: number;
++}
++
++/** Width the pointer is currently asking for. The handle sits to the RIGHT of
++ *  the pane, so moving right widens it one-to-one; clamping happens on the way
++ *  into state, not here, so the value stays a pure function of the gesture. */
++export function widthFromDrag(origin: DragOrigin, clientX: number): number {
++  return origin.width + (clientX - origin.x);
++}
++
++export function parseLayout(raw: string | null, viewportWidth: number): SidebarLayout {
++  if (!raw) return defaultLayout(viewportWidth);
++  try {
++    const parsed: unknown = JSON.parse(raw);
++    if (!parsed || typeof parsed !== "object") return defaultLayout(viewportWidth);
++    return normalize(parsed as Partial<SidebarLayout>, viewportWidth);
++  } catch {
++    return defaultLayout(viewportWidth);
++  }
++}
++
++export function readLayout(storage: SidebarStorage, viewportWidth: number): SidebarLayout {
++  try {
++    return parseLayout(storage.getItem(SIDEBAR_LAYOUT_STORAGE_KEY), viewportWidth);
++  } catch {
++    // Private-mode Safari throws on access, and a preference is never worth a crash.
++    return defaultLayout(viewportWidth);
++  }
++}
++
++export function writeLayout(storage: SidebarStorage, layout: SidebarLayout): void {
++  try {
++    storage.setItem(SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(layout));
++  } catch {
++    // Quota or private mode. The width still works for this session.
++  }
++}
+diff --git a/apps/web/src/main.tsx b/apps/web/src/main.tsx
+index 798193a..d88e0a9 100644
+--- a/apps/web/src/main.tsx
++++ b/apps/web/src/main.tsx
+@@ -5,10 +5,12 @@ import { AppToastProvider } from "./components/AppToast.js";
+ import { HotkeyProvider } from "./hotkeys/index.js";
+ import { resolveApiBase, resolveApiHeaders } from "./api-config.js";
+ import { installBrowserLogging } from "./browser-logger.js";
++import { installEmbeddedThemeBridge } from "./embedded-theme.js";
+ import "./index.css";
+ import "./styles.css";
+ 
+ installBrowserLogging(resolveApiBase(), resolveApiHeaders());
++installEmbeddedThemeBridge();
+ 
+ const el = document.getElementById("root");
+ if (!el) throw new Error("#root not found");
+diff --git a/apps/web/src/projection/awaiting.test.ts b/apps/web/src/projection/awaiting.test.ts
+new file mode 100644
+index 0000000..c7bc26c
+--- /dev/null
++++ b/apps/web/src/projection/awaiting.test.ts
+@@ -0,0 +1,158 @@
++import { describe, expect, it } from "vitest";
++import { awaitingByThread, awaitingLabel } from "./awaiting.js";
++
++const thread = (threadId: string, lastMessageRole?: string) => ({ threadId, lastMessageRole });
++
++describe("awaitingByThread", () => {
++  it("marks a thread whose handoff is outstanding and whose last word was the user's", () => {
++    const result = awaitingByThread(
++      [{ handoffId: "h1", threadId: "t1", target: "second-agent", requestedAt: "2026-09-21T10:00:00.000Z" }],
++      [thread("t1", "human")],
++    );
++    expect(result.get("t1")).toEqual({
++      target: "second-agent",
++      handoffId: "h1",
++      requestedAt: "2026-09-21T10:00:00.000Z",
++      count: 1,
++    });
++  });
++
++  it("does not mark a thread whose response already landed, even while the mapping lingers", () => {
++    const result = awaitingByThread(
++      [{ handoffId: "h1", threadId: "t1", target: "second-agent", requestedAt: "2026-09-21T10:00:00.000Z" }],
++      [thread("t1", "ai")],
++    );
++    expect(result.has("t1")).toBe(false);
++  });
++
++  it("ignores a mapping for a thread the client does not know", () => {
++    const result = awaitingByThread(
++      [{ handoffId: "h1", threadId: "gone", target: "second-agent" }],
++      [thread("t1", "human")],
++    );
++    expect(result.size).toBe(0);
++  });
++
++  it("ignores a thread with no messages yet", () => {
++    const result = awaitingByThread([{ handoffId: "h1", threadId: "t1", target: "x" }], [thread("t1", undefined)]);
++    expect(result.has("t1")).toBe(false);
++  });
++
++  it("reports the oldest target and counts every outstanding handoff on the thread", () => {
++    const result = awaitingByThread(
++      [
++        { handoffId: "h-new", threadId: "t1", target: "review-agent", requestedAt: "2026-09-21T11:00:00.000Z" },
++        { handoffId: "h-old", threadId: "t1", target: "demo-agent", requestedAt: "2026-09-21T09:00:00.000Z" },
++        { handoffId: "h-mid", threadId: "t1", target: "reporting-agent", requestedAt: "2026-09-21T10:00:00.000Z" },
++      ],
++      [thread("t1", "human")],
++    );
++    expect(result.get("t1")).toEqual({
++      target: "demo-agent",
++      handoffId: "h-old",
++      requestedAt: "2026-09-21T09:00:00.000Z",
++      count: 3,
++    });
++  });
++
++  it("prefers a dated mapping over an undated one, whatever the arrival order", () => {
++    const dated = { handoffId: "h-dated", threadId: "t1", target: "dated", requestedAt: "2026-09-21T09:00:00.000Z" };
++    const undated = { handoffId: "h-undated", threadId: "t1", target: "undated" };
++    for (const pending of [[undated, dated], [dated, undated]]) {
++      const result = awaitingByThread(pending, [thread("t1", "human")]);
++      expect(result.get("t1")).toMatchObject({ target: "dated", handoffId: "h-dated", count: 2 });
++    }
++  });
++
++  it("keeps threads independent", () => {
++    const result = awaitingByThread(
++      [
++        { handoffId: "h1", threadId: "t1", target: "a", requestedAt: "2026-09-21T09:00:00.000Z" },
++        { handoffId: "h2", threadId: "t2", target: "b", requestedAt: "2026-09-21T09:30:00.000Z" },
++        { handoffId: "h3", threadId: "t3", target: "c", requestedAt: "2026-09-21T09:40:00.000Z" },
++      ],
++      [thread("t1", "human"), thread("t2", "ai"), thread("t3", "human")],
++    );
++    expect([...result.keys()].sort()).toEqual(["t1", "t3"]);
++  });
++
++  it("drops malformed mappings instead of rendering a badge with no target", () => {
++    const result = awaitingByThread(
++      [
++        { handoffId: "", threadId: "t1", target: "a" },
++        { handoffId: "h2", threadId: "", target: "a" },
++        { handoffId: "h3", threadId: "t1", target: "" },
++      ],
++      [thread("t1", "human")],
++    );
++    expect(result.size).toBe(0);
++  });
++
++  it("is empty when nothing is pending", () => {
++    expect(awaitingByThread([], [thread("t1", "human")]).size).toBe(0);
++  });
++});
++
++describe("awaitingLabel", () => {
++  const elapsed = (iso: string) => (iso === "2026-09-21T09:00:00.000Z" ? "3m" : "");
++
++  it("names the target and how long it has waited", () => {
++    expect(
++      awaitingLabel({ target: "second-agent", handoffId: "h1", requestedAt: "2026-09-21T09:00:00.000Z", count: 1 }, elapsed),
++    ).toBe("Waiting for second-agent · 3m");
++  });
++
++  it("omits the elapsed part when there is no timestamp", () => {
++    expect(awaitingLabel({ target: "second-agent", handoffId: "h1", count: 1 }, elapsed)).toBe("Waiting for second-agent");
++  });
++
++  it("omits the elapsed part when the formatter cannot render one", () => {
++    expect(
++      awaitingLabel({ target: "second-agent", handoffId: "h1", requestedAt: "not-a-date", count: 1 }, elapsed),
++    ).toBe("Waiting for second-agent");
++  });
++
++  it("says how many are outstanding when the user sent again", () => {
++    expect(
++      awaitingLabel({ target: "reporting-agent", handoffId: "h1", requestedAt: "2026-09-21T09:00:00.000Z", count: 3 }, elapsed),
++    ).toBe("Waiting for reporting-agent · 3m · 3 sent");
++  });
++
++  it("never says '1 sent', which would read as a defect", () => {
++    expect(awaitingLabel({ target: "x", handoffId: "h1", count: 1 }, elapsed)).not.toContain("sent");
++  });
++});
++
++describe("awaitingLabel with queue state", () => {
++  const elapsed = (iso: string) => (iso ? "3m" : "");
++  const base = { target: "demo-agent", handoffId: "h1", requestedAt: "2026-09-28T10:00:00Z", count: 1 };
++
++  it("says the agent is working once the dispatcher claimed it", () => {
++    expect(awaitingLabel({ ...base, queueState: "running", startedAt: "2026-09-28T10:01:00Z" }, elapsed)).toBe(
++      "demo-agent is working · 3m",
++    );
++  });
++
++  it("says how many are ahead while it waits its turn", () => {
++    expect(awaitingLabel({ ...base, queueState: "queued", ahead: 2 }, elapsed)).toBe("Queued for demo-agent · 2 ahead");
++  });
++
++  it("says next when nothing is ahead", () => {
++    expect(awaitingLabel({ ...base, queueState: "queued", ahead: 0 }, elapsed)).toBe("Queued for demo-agent · next");
++  });
++
++  it("falls back to the plain wait when the queue gave no state", () => {
++    expect(awaitingLabel(base, elapsed)).toBe("Waiting for demo-agent · 3m");
++  });
++
++  it("carries queue state from the oldest outstanding handoff", () => {
++    const result = awaitingByThread(
++      [
++        { handoffId: "h-new", threadId: "t1", target: "b", requestedAt: "2026-09-28T11:00:00Z", queueState: "queued", ahead: 3 },
++        { handoffId: "h-old", threadId: "t1", target: "a", requestedAt: "2026-09-28T09:00:00Z", queueState: "running", startedAt: "x" },
++      ],
++      [{ threadId: "t1", lastMessageRole: "human" }],
++    );
++    expect(result.get("t1")).toMatchObject({ target: "a", queueState: "running", count: 2 });
++  });
++});
+diff --git a/apps/web/src/projection/awaiting.ts b/apps/web/src/projection/awaiting.ts
+new file mode 100644
+index 0000000..4770a3c
+--- /dev/null
++++ b/apps/web/src/projection/awaiting.ts
+@@ -0,0 +1,112 @@
++/** Derives "sent, still waiting" per thread from the bridge's pending handoff mappings. */
++
++export interface PendingHandoffLike {
++  handoffId: string;
++  threadId: string;
++  target: string;
++  requestedAt?: string;
++  queueState?: "queued" | "running";
++  ahead?: number;
++  startedAt?: string;
++}
++
++export interface ThreadRoleLike {
++  threadId: string;
++  lastMessageRole?: string;
++}
++
++export interface AwaitingInfo {
++  /** Target of the oldest outstanding handoff, which is the one that has waited longest. */
++  target: string;
++  handoffId: string;
++  requestedAt?: string;
++  /** Outstanding handoffs on this thread; more than one means the user sent again before a reply. */
++  count: number;
++  queueState?: "queued" | "running";
++  ahead?: number;
++  startedAt?: string;
++}
++
++/**
++ * A mapping alone is not proof the thread is still waiting: the return watcher posts the response
++ * BEFORE it moves the mapping out of `pending/`, so for one cycle a delivered handoff is still
++ * listed. Requiring the last message to be the user's closes that window, since a delivered response
++ * flips `lastMessageRole` to "ai".
++ */
++export function awaitingByThread(
++  pending: readonly PendingHandoffLike[],
++  threads: readonly ThreadRoleLike[],
++): Map<string, AwaitingInfo> {
++  const roleByThread = new Map(threads.map((thread) => [thread.threadId, thread.lastMessageRole]));
++  const byThread = new Map<string, AwaitingInfo>();
++
++  for (const item of pending) {
++    if (!item.threadId || !item.target || !item.handoffId) continue;
++    // A thread the client has never heard of is not renderable, so it cannot be shown as waiting.
++    if (!roleByThread.has(item.threadId)) continue;
++    if (roleByThread.get(item.threadId) !== "human") continue;
++
++    const current = byThread.get(item.threadId);
++    if (!current) {
++      byThread.set(item.threadId, {
++        target: item.target,
++        handoffId: item.handoffId,
++        requestedAt: item.requestedAt,
++        count: 1,
++        queueState: item.queueState,
++        ahead: item.ahead,
++        startedAt: item.startedAt,
++      });
++      continue;
++    }
++    const older = isOlder(item.requestedAt, current.requestedAt);
++    const lead = older ? item : current;
++    byThread.set(item.threadId, {
++      target: lead.target,
++      handoffId: lead.handoffId,
++      requestedAt: lead.requestedAt,
++      count: current.count + 1,
++      queueState: lead.queueState,
++      ahead: lead.ahead,
++      startedAt: lead.startedAt,
++    });
++  }
++  return byThread;
++}
++
++/** A missing timestamp cannot be shown as a wait time, so a dated entry always wins. */
++function isOlder(candidate: string | undefined, incumbent: string | undefined): boolean {
++  if (!candidate) return false;
++  if (!incumbent) return true;
++  return candidate < incumbent;
++}
++
++/**
++ * Badge text for an outstanding handoff. Kept here rather than in JSX so the parts that can be wrong
++ * — a missing timestamp, a repeat send — are checkable without rendering.
++ */
++export function awaitingLabel(
++  info: AwaitingInfo,
++  formatElapsed: (iso: string) => string,
++): string {
++  // The queue position, when known, answers the question the elapsed time alone cannot: is this
++  // mail waiting its turn, or is the agent already working on it?
++  if (info.queueState === "running") {
++    const working = info.startedAt ? formatElapsed(info.startedAt) : "";
++    const parts = [`${info.target} is working`];
++    if (working) parts.push(working);
++    if (info.count > 1) parts.push(`${info.count} sent`);
++    return parts.join(" · ");
++  }
++  if (info.queueState === "queued") {
++    const parts = [`Queued for ${info.target}`];
++    parts.push(info.ahead ? `${info.ahead} ahead` : "next");
++    if (info.count > 1) parts.push(`${info.count} sent`);
++    return parts.join(" · ");
++  }
++  const parts = [`Waiting for ${info.target}`];
++  const elapsed = info.requestedAt ? formatElapsed(info.requestedAt) : "";
++  if (elapsed) parts.push(elapsed);
++  if (info.count > 1) parts.push(`${info.count} sent`);
++  return parts.join(" · ");
++}
+diff --git a/apps/web/src/projection/counterpart.test.ts b/apps/web/src/projection/counterpart.test.ts
+new file mode 100644
+index 0000000..78f4149
+--- /dev/null
++++ b/apps/web/src/projection/counterpart.test.ts
+@@ -0,0 +1,42 @@
++import { describe, expect, it } from "vitest";
++import { threadCounterpart } from "./counterpart.js";
++
++const msg = (text: string) => ({ parts: [{ type: "text", text }] });
++
++describe("threadCounterpart", () => {
++  it("names the agent from an outgoing leg", () => {
++    expect(threadCounterpart([msg("**To: demo-agent**\n\noi")])).toBe("demo-agent");
++  });
++
++  it("names the agent from the reply", () => {
++    expect(
++      threadCounterpart([msg("**To: demo-agent**\n\noi"), msg("**From: demo-agent**\n**Status: done**\n\nOK")]),
++    ).toBe("demo-agent");
++  });
++
++  it("takes the newest stamped leg when the counterpart changed mid-thread", () => {
++    expect(
++      threadCounterpart([msg("**To: demo-agent**\n\noi"), msg("**To: second-agent**\n\nagora voce")]),
++    ).toBe("second-agent");
++  });
++
++  it("skips unstamped chat turns to find the stamp underneath", () => {
++    expect(threadCounterpart([msg("**To: demo-agent**\n\noi"), msg("um aparte sem carimbo")])).toBe("demo-agent");
++  });
++
++  it("yields null for plain Pizza Bot chat", () => {
++    expect(threadCounterpart([msg("bom dia"), msg("ola! como posso ajudar?")])).toBeNull();
++  });
++
++  it("does not read a quoted header mid-text as a stamp", () => {
++    expect(threadCounterpart([msg("ele disse **To: fake-agent** no meio da frase")])).toBeNull();
++  });
++
++  it("handles messages without text parts", () => {
++    expect(threadCounterpart([{ parts: [{ type: "file" }] }, msg("**From: demo-agent**\n\nok")])).toBe("demo-agent");
++  });
++
++  it("is empty-safe", () => {
++    expect(threadCounterpart([])).toBeNull();
++  });
++});
+diff --git a/apps/web/src/projection/counterpart.ts b/apps/web/src/projection/counterpart.ts
+new file mode 100644
+index 0000000..29f53f5
+--- /dev/null
++++ b/apps/web/src/projection/counterpart.ts
+@@ -0,0 +1,21 @@
++/** Derives which agent a conversation is with, so replying preselects the right recipient. */
++
++interface MessageLike {
++  parts: ReadonlyArray<{ type: string; text?: string }>;
++}
++
++const HEADER = /^\*\*(?:To|From):\s*([A-Za-z0-9][A-Za-z0-9._-]{0,99})\*\*/;
++
++/**
++ * The bridge stamps every leg with a `**To: x**` / `**From: x**` header, so the newest stamped
++ * message names the counterpart. Plain Pizza Bot chat has no stamps and yields null — replying
++ * there stays a chat, not a handoff.
++ */
++export function threadCounterpart(messages: ReadonlyArray<MessageLike>): string | null {
++  for (let i = messages.length - 1; i >= 0; i--) {
++    const text = messages[i]?.parts.find((part) => part.type === "text")?.text ?? "";
++    const name = HEADER.exec(text)?.[1];
++    if (name) return name;
++  }
++  return null;
++}
+diff --git a/apps/web/src/projection/index.ts b/apps/web/src/projection/index.ts
+index eb0b150..49744a7 100644
+--- a/apps/web/src/projection/index.ts
++++ b/apps/web/src/projection/index.ts
+@@ -1,3 +1,5 @@
+ export * from "./adapter.js";
++export * from "./awaiting.js";
++export * from "./counterpart.js";
+ export * from "./messages.js";
+ export * from "./thread-slice.js";
+diff --git a/apps/web/src/protocol-stream-store.test.ts b/apps/web/src/protocol-stream-store.test.ts
+index a5fed85..9a16f6c 100644
+--- a/apps/web/src/protocol-stream-store.test.ts
++++ b/apps/web/src/protocol-stream-store.test.ts
+@@ -482,6 +482,56 @@ describe("ProtocolStreamStore steering-enqueue", () => {
+     expect(store.getSlice(TID).queued).toEqual([]);
+   });
+ 
++  it("rehydrates a thread already marked ready, for state appended out of band", async () => {
++    // A fresh chat attaches without hydrating, which leaves the entry "ready" with nothing read.
++    await store.attach(TID, false);
++    expect(last.hydrateCalls).toBe(0);
++    expect(store.getSlice(TID)).toMatchObject({ hydrationStatus: "ready" });
++
++    // attach() is idempotent by design, so it cannot be the way to pick up a server-side append.
++    await store.attach(TID, true);
++    expect(last.hydrateCalls).toBe(0);
++
++    await store.rehydrate(TID);
++    expect(last.hydrateCalls).toBe(1);
++    expect(store.getSlice(TID)).toMatchObject({ attached: true, hydrationStatus: "ready" });
++
++    await store.rehydrate(TID);
++    expect(last.hydrateCalls).toBe(2);
++  });
++
++  it("rebuilds a draft's controller so a server-side append can be read", async () => {
++    // A fresh chat's controller is built with no thread id bound: only send() binds one, so hydrating
++    // that same controller throws "no bound threadId" instead of reading the appended message.
++    await store.attach(TID, false);
++    const draftController = last;
++    expect(draftController.initialThreadId).toBeUndefined();
++
++    await store.rehydrate(TID);
++
++    expect(last).not.toBe(draftController);
++    expect(last.initialThreadId).toBe(TID);
++    expect(last.hydrateCalls).toBe(1);
++    expect(store.getSlice(TID)).toMatchObject({ attached: true, hydrationStatus: "ready" });
++  });
++
++  it("rehydrates a thread it has never seen by attaching it", async () => {
++    await store.rehydrate("never-seen");
++    expect(last.hydrateCalls).toBe(1);
++    expect(store.getSlice("never-seen")).toMatchObject({ attached: true });
++  });
++
++  it("surfaces a rehydrate failure instead of swallowing it", async () => {
++    // Server-backed, so rehydrate resets this controller instead of replacing it.
++    await store.attach(TID, true);
++    const offline = new Error("offline");
++    // The fake captures hydrateErrors when the controller is constructed, and attach already built it.
++    last.hydrateErrors = [offline];
++
++    await expect(store.rehydrate(TID)).rejects.toBe(offline);
++    expect(store.getSlice(TID)).toMatchObject({ hydrationStatus: "error", hydrationError: "offline" });
++  });
++
+   it("exposes hydration errors and retries a later attach", async () => {
+     const offline = new Error("offline");
+     nextHydrateErrors = [offline];
+diff --git a/apps/web/src/protocol-stream-store.ts b/apps/web/src/protocol-stream-store.ts
+index 12e98fa..24df0ee 100644
+--- a/apps/web/src/protocol-stream-store.ts
++++ b/apps/web/src/protocol-stream-store.ts
+@@ -443,6 +443,32 @@ export class ProtocolStreamStore {
+     return promise;
+   }
+ 
++  /**
++   * Re-reads thread state from the server for a thread that is already attached.
++   *
++   * `attach` is idempotent by design and returns early once a thread is "ready", which is correct for
++   * mounting but blind to state appended out of band — the Kiro bridge writes messages straight into
++   * graph state, so no stream frame ever announces them. Resetting the status is what makes the
++   * second read happen.
++   */
++  async rehydrate(threadId: string): Promise<void> {
++    const e = this.entries.get(threadId);
++    if (e) {
++      await e.hydrationPromise?.catch(() => undefined);
++      if (e.needsInitialBinding) {
++        // A draft's controller and transport were built with no thread id bound, and only send()
++        // ever binds one, so this controller can never read server state. Dropping it lets entry()
++        // rebuild a server-backed pair, which is cheap next to showing an empty conversation.
++        this.disposeController(threadId);
++      } else {
++        e.hydrationStatus = "unattached";
++        e.hydrationPromise = undefined;
++      }
++    }
++    this.persistedThreadIds.add(threadId);
++    return this.attach(threadId, true);
++  }
++
+   async send(
+     threadId: string,
+     text: string,
+diff --git a/apps/web/src/styles.css b/apps/web/src/styles.css
+index bbe8fda..b2e426d 100644
+--- a/apps/web/src/styles.css
++++ b/apps/web/src/styles.css
+@@ -46,10 +46,39 @@ body {
+ .inbox-body { display: flex; flex: 1; min-height: 0; }
+ 
+ .has-sidebar .sidebar {
+-  width: 320px; flex: 0 0 320px; min-height: 0;
++  width: var(--sidebar-w, 320px); flex: 0 0 var(--sidebar-w, 320px); min-height: 0;
+   display: flex; flex-direction: column;
+   background: var(--sidebar-bg); border-right: 1px solid var(--border);
+ }
++/* Collapsed: out of the layout AND out of the tab order, which width:0 would not do. */
++.has-sidebar.sidebar-collapsed .sidebar { display: none; }
++
++/* The grab strip. 5px wide with a 9px pointer target, so it is reachable
++   without stealing pixels from either pane. */
++.sidebar-resizer {
++  flex: 0 0 5px; width: 5px; align-self: stretch;
++  position: relative; cursor: col-resize; touch-action: none;
++  background: transparent; border: 0; padding: 0;
++}
++.sidebar-resizer::before {
++  content: ""; position: absolute; top: 0; bottom: 0; left: -2px; right: -2px;
++}
++.sidebar-resizer::after {
++  content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px;
++  background: transparent; transition: background .15s, box-shadow .15s;
++}
++.sidebar-resizer:hover::after,
++.sidebar-resizer:focus-visible::after,
++.sidebar-resizer.dragging::after {
++  background: var(--brand); box-shadow: 0 0 0 1px color-mix(in oklch, var(--brand) 40%, transparent);
++}
++.sidebar-resizer:focus-visible { outline: none; }
++/* Collapsed the strip is the only way back, so it stays visible. */
++.sidebar-resizer[data-collapsed="true"] { flex-basis: 8px; width: 8px; }
++.sidebar-resizer[data-collapsed="true"]::after { background: var(--border); }
++/* A drag leaves the strip immediately; without this the pointer selects text
++   across both panes on the way. */
++body:has(.sidebar-resizer.dragging) { user-select: none; cursor: col-resize; }
+ .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); }
+ 
+ .new-chat {
+@@ -341,6 +370,36 @@ button.sidebar-folder-row:hover,
+ .thread-time { flex: 0 0 auto; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+ .thread-preview { font-size: 13px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ .thread-badge { color: var(--dim); font-size: 12px; flex: 0 0 auto; }
++.thread-awaiting {
++  display: inline-flex; align-items: center; gap: 4px;
++  font-size: 12px; color: var(--brand);
++  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
++}
++/* The glyph carries the "still in flight" reading; the text alone already states it for a reader
++   who cannot see motion, so the animation is decoration and drops under reduced-motion. */
++.thread-awaiting svg { flex: 0 0 auto; animation: pulse 2s ease-in-out infinite; }
++.thread-row.awaiting-reply { border-left: 2px solid var(--brand); }
++.thread-select-box { flex: 0 0 auto; align-self: center; margin: 0 2px 0 0; accent-color: var(--brand); }
++.thread-row.selected-for-delete { background: color-mix(in srgb, var(--brand) 12%, transparent); }
++.sidebar-bulkbar {
++  display: flex; align-items: center; gap: 8px;
++  padding: 6px 12px; border-bottom: 1px solid var(--border);
++  font-size: 12px; color: var(--dim);
++}
++.sidebar-bulkbar-count { flex: 1; }
++.sidebar-bulkbar-delete {
++  display: inline-flex; align-items: center; gap: 4px;
++  padding: 4px 10px; border-radius: 6px; border: 0; cursor: pointer;
++  background: var(--danger, #b91c1c); color: #fff; font-size: 12px; font-weight: 600;
++}
++.sidebar-bulkbar-delete:disabled { opacity: .45; cursor: default; }
++.sidebar-bulkbar-cancel {
++  padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer;
++  background: transparent; color: var(--text); font-size: 12px;
++}
++@media (prefers-reduced-motion: reduce) {
++  .thread-awaiting svg { animation: none; }
++}
+ @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+ 
+ .hit {
+@@ -794,6 +853,17 @@ button.sidebar-folder-row:hover,
+ 
+ .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+ .composer-tools { display: flex; align-items: center; gap: 8px; min-width: 0; }
++.composer-recipient {
++  display: inline-flex; align-items: center; gap: 5px; height: 32px; padding: 0 8px;
++  border: 1px solid var(--border); border-radius: 8px; color: var(--dim);
++  font-size: 12px; font-weight: 600; background: var(--panel-2);
++}
++.composer-recipient select {
++  max-width: 190px; border: 0; outline: 0; background: transparent; color: var(--text);
++  font: inherit; cursor: pointer;
++}
++.composer-recipient select:disabled { cursor: default; opacity: .55; }
++.composer-route-notice { color: var(--brand); font-size: 12px; align-self: center; }
+ .composer-attach {
+   display: inline-flex; align-items: center; justify-content: center;
+   height: 32px; width: 32px; border: 0; border-radius: 8px; cursor: pointer;
+@@ -1915,6 +1985,10 @@ textarea.field-input { resize: vertical; line-height: 1.5; }
+   .inbox-module.mobile-chat .sidebar { display: none; }
+ 
+   .has-sidebar .sidebar { width: 100%; flex: 1 1 auto; border-right: 0; }
++  /* On mobile the list IS the view, so a desktop width must not reach it and
++     there is nothing to drag. */
++  .has-sidebar.sidebar-collapsed .sidebar { display: flex; }
++  .sidebar-resizer { display: none; }
+ 
+   .panes,
+   .panes.no-inspector,
+diff --git a/apps/web/src/use-sidebar-width.ts b/apps/web/src/use-sidebar-width.ts
+new file mode 100644
+index 0000000..12b108b
+--- /dev/null
++++ b/apps/web/src/use-sidebar-width.ts
+@@ -0,0 +1,78 @@
++import { useCallback, useEffect, useRef, useState } from "react";
++import {
++  defaultLayout,
++  normalize,
++  nudge,
++  readLayout,
++  resizeTo,
++  toggleCollapsed,
++  writeLayout,
++  type SidebarLayout,
++} from "./lib/sidebar-width.js";
++
++const isBrowser = typeof window !== "undefined";
++/** Only used when there is no window (tests, SSR): wide enough not to clamp. */
++const ASSUMED_VIEWPORT = 1440;
++/** A drag fires pointermove ~60x/s; persisting each one would be pointless churn. */
++const PERSIST_DEBOUNCE_MS = 250;
++
++function viewportWidth(): number {
++  return isBrowser ? window.innerWidth : ASSUMED_VIEWPORT;
++}
++
++export interface SidebarWidthControls {
++  layout: SidebarLayout;
++  /** Absolute width in px, from a drag. Clamped and snapped by the caller's state. */
++  resize: (width: number) => void;
++  /** Relative width change in px, from the keyboard. */
++  nudgeBy: (delta: number) => void;
++  /** Collapse an open pane, or restore the remembered width. */
++  toggle: () => void;
++}
++
++/** Owns the conversation-list width: reads the stored preference once, keeps it
++ *  inside the current window, and persists changes after the drag settles. */
++export function useSidebarWidth(): SidebarWidthControls {
++  const [layout, setLayout] = useState<SidebarLayout>(() =>
++    isBrowser ? readLayout(window.localStorage, viewportWidth()) : defaultLayout(ASSUMED_VIEWPORT),
++  );
++
++  const firstRender = useRef(true);
++  useEffect(() => {
++    if (firstRender.current) {
++      firstRender.current = false;
++      return;
++    }
++    if (!isBrowser) return;
++    const timer = window.setTimeout(() => writeLayout(window.localStorage, layout), PERSIST_DEBOUNCE_MS);
++    return () => window.clearTimeout(timer);
++  }, [layout]);
++
++  // Moving the window to a narrower screen must not leave the list wider than
++  // the reading pane. Re-clamping returns the same object when nothing moves,
++  // so this does not re-render on every resize frame.
++  useEffect(() => {
++    if (!isBrowser) return;
++    const onResize = () =>
++      setLayout((prev) => {
++        const next = normalize(prev, window.innerWidth);
++        return next.width === prev.width && next.expandedWidth === prev.expandedWidth ? prev : next;
++      });
++    window.addEventListener("resize", onResize);
++    return () => window.removeEventListener("resize", onResize);
++  }, []);
++
++  const resize = useCallback((width: number) => {
++    setLayout((prev) => resizeTo(prev, width, viewportWidth()));
++  }, []);
++
++  const nudgeBy = useCallback((delta: number) => {
++    setLayout((prev) => nudge(prev, delta, viewportWidth()));
++  }, []);
++
++  const toggle = useCallback(() => {
++    setLayout((prev) => toggleCollapsed(prev, viewportWidth()));
++  }, []);
++
++  return { layout, resize, nudgeBy, toggle };
++}
+diff --git a/docs/AGENT_DASHBOARD_INTEGRATION.md b/docs/AGENT_DASHBOARD_INTEGRATION.md
+new file mode 100644
+index 0000000..6fad846
+--- /dev/null
++++ b/docs/AGENT_DASHBOARD_INTEGRATION.md
+@@ -0,0 +1,77 @@
++# Agent Dashboard notification bridge
++
++This local branch adds `POST /notifications` so Kiro agents can publish durable inbox messages without
++spending a model call. The upstream Pizza Bot runtime remains otherwise unchanged.
++
++## Request
++
++```json
++{
++  "title": "Report ready",
++  "body": "The report was published.",
++  "source": "reporting-agent",
++  "severity": "info",
++  "requiresAction": false,
++  "idempotencyKey": "reporting-agent:report:2026-09-17",
++  "link": "http://127.0.0.1:7781/private/report"
++}
++```
++
++`severity` is `info`, `warning`, or `critical`. `link` is optional and accepts only HTTP(S).
++
++## Semantics
++
++- `idempotencyKey` maps deterministically to one notification thread;
++- a duplicate returns the existing thread without another checkpoint write;
++- routine messages go to `Agent Updates`;
++- messages requiring attention go to `Action Required` and receive an `[ACTION]` title prefix;
++- critical messages are pinned;
++- all new notifications are unread;
++- content is written directly to LangGraph state as an AI message, without an LLM invocation;
++- failed checkpoint persistence removes the empty metadata thread.
++
++The endpoint does not set Pizza Bot's native `awaitingAction`. That flag is reserved for a real
++LangGraph HITL interrupt with a resolvable decision. Kiro needs-input events remain clearly labeled
++and grouped, while true Pizza workflows continue using the native Action filter.
++
++## Validation
++
++- five route tests cover creation, dedupe, routing, validation and rollback;
++- a real loopback request produced one message and the duplicate produced no second write;
++- the rendered browser UI contained the title and body;
++- the fixture thread was removed after validation.
++
++## Embedded theme synchronization
++
++The Agent Dashboard sends `agent-dashboard-theme` with `light` or `dark` through `postMessage`.
++Pizza accepts it only from `http://127.0.0.1:7780` or `http://localhost:7780`, applies the theme and
++keeps it authoritative while embedded. A readiness message closes the iframe-load race.
++
++## Direct Kiro routing
++
++The Composer includes a `To` selector. `Pizza Bot` keeps normal DeepAgents/LangGraph behavior; an
++exact Kiro agent target calls `POST /kiro/handoffs` instead. Every explicit submit carries a new
++`requestId`: network replay of one request stays idempotent, while deliberately resending identical
++text creates a fresh handoff.
++
++```text
++Composer To=<agent>
++  -> handoff.sh with exact target + business idempotency key
++  -> agents-state queue with lease/recovery
++  -> target agent response contract
++  -> pizza-a2a-bridge.py
++  -> POST /kiro/responses
++  -> same Pizza thread becomes unread
++```
++
++The semantic response proof requires the Kiro final-answer `>` prefix and searches only the last 20
++non-empty log lines, so prompt/docs/tool output cannot satisfy it. Responses are deduplicated by
++`handoffId`. If the user deleted the thread before delivery, the API returns `orphaned=true` and does
++not recreate it; deletion during append is also covered. A redelivery is a no-op. Explicit
++`NEEDS_INPUT` returns with status `needs-input` and moves the thread to `Action Required`.
++Attachments to Kiro targets are disabled during the pilot; Pizza Bot recipients keep normal
++attachment support.
++
++`GET /kiro/agents` reads valid top-level Kiro agent JSON configs from `PIZZA_KIRO_AGENTS_DIR`
++(default `~/.kiro/agents`). KiroCrew agents remain independent and are listed only because they are
++valid agents; no KiroCrew runtime or files are modified by the bridge.

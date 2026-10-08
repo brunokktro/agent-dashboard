@@ -33,11 +33,13 @@ This dashboard is the observability half of that missing layer: not a wrapper ar
 | | |
 |---|---|
 | **Agents** - searchable grid with health scores, trends and one-click run/terminal | ![Agents](docs/img/agents.png) |
-| **Board** - work-items kanban (running / pending / failed / done) with retry, cancel and detail panel; plus Backlog & Review-notes views | ![Board](docs/img/queue.png) |
+| **Board** - work-items kanban (running / pending / failed / done) with retry, cancel and detail panel; Pending cards show priority while execution uses priority then FIFO and the view stays newest-first. Discarded backlog items move to the configurable `Downloads/ToDelete/backlog-deleted/`, never an internal permanent trash | ![Board](docs/img/queue.png) |
 | **Health** - day×hour activity heatmap (failure-tinted) + worst-first score cards | ![Health](docs/img/health.png) |
 | **Supervisor** - clickable KPI filters, "up next" countdowns, cron in plain English | ![Supervisor](docs/img/supervisor.png) |
 | **Console** - multi-terminal grid, agent chat sessions that survive refreshes, broadcast bar | ![Console](docs/img/console.png) |
 | **Pipe mode** - chain agents with an animated flow view and live-streamed output (~1s latency) | ![Pipe](docs/img/pipe.png) |
+| **A2A** - delivery queue, recent handoffs, active discoveries, consumer watermarks, transport drift and worker health, all read through the ecosystem's canonical readers | Built-in `/a2a` page |
+| **Pizza Bot Inbox** - long-running threads, unread results and actions waiting for your decision, backed by a loopback DeepAgents/LangGraph sidecar | See [`docs/pizza.md`](docs/pizza.md) |
 | **Logs** - live tail with SSE, error highlighting, deep-linkable files | ![Logs](docs/img/logs.png) |
 
 Per-agent observability: 30-day P50/P95/P99 duration percentiles and success-rate charts on every agent page.
@@ -90,9 +92,15 @@ If you use [KiroCrew](https://kiro.dev/docs/crew/), this dashboard is also packa
 **Where the built bundles live.** `main` never tracks build output - it is a source branch. The App Store installs from the **`release`** branch, which is `main` plus one generated commit carrying the built `frontend/dist` and `ui/dist`, so an install needs no Node on the target machine. The root `package.json` is an empty marker that keeps the installer's build step a no-op (see [DECISIONS #14](docs/DECISIONS.md)). That branch is produced, never hand-edited:
 
 ```bash
-bin/make-release            # build both bundles, publish the release branch, tag the source commit, verify by blob hash
-bin/make-release --dry-run  # show what would be published
+bin/make-release            # build, sanitize, publish release, tag source, verify blob hashes
+bin/make-release --dry-run  # build and scan the exact tree without publishing
+bin/make-release --dry-run --output /path/to/tree  # preserve that validated tree for an install test
 ```
+
+Before any GitHub write, `make-release` mounts `main` plus both fresh bundles, validates the
+required entry points, runs `bin/scan-release` positive controls, then scans both the mounted tree
+and a tar archive of it. Site-specific customer names can be supplied without committing them via
+`RELEASE_DENY_TERMS_FILE=/path/to/terms`.
 
 **Release process**, so every version stays traceable:
 
@@ -176,6 +184,7 @@ Everything is environment-driven - no hardcoded paths.
 | `DASHBOARD_UPSTREAM_REPO` | `brunokktro/agent-dashboard` | `owner/name` checked by the header's update button; empty disables the check |
 | `DASHBOARD_EXTRA_HINTS` | `[]` | Site-specific failure hints for the run diagnosis, JSON list of `[regex, hint]` pairs matched against the failing run's log (e.g. `'[["corp-sso","SSO expired - re-authenticate"]]'`) - keeps internal tool names out of the code |
 | `DASHBOARD_REDIRECTS` | `{}` | Paths this dashboard no longer serves, mapped to where they now live: `{"/old-page": "http://localhost:7781/old-page"}`. Answers 307 so a bookmark never dead-ends. |
+| `DASHBOARD_PIZZA_URL` | `http://127.0.0.1:7782` | Loopback-only Pizza Bot sidecar shown in the `/pizza` tab. Non-loopback values are rejected. |
 
 Running under an app host (e.g. as a KiroCrew app) the backend gets a minimal environment, so `DASHBOARD_*` vars cannot reach it. There, the host's per-app settings file is the configuration channel: `$KIROCREW_HOME/apps/agent-dashboard/data/config.json` (editable via the host's `PUT /api/apps/agent-dashboard/config`), accepting `exclude_agents`, `extra_hints`, `big_log_mb`, `stuck_after_minutes`, `job_agent_overrides` and `agent_deps` with the same shapes as the env vars. Recognized keys override the environment; the file is optional.
 
@@ -344,6 +353,30 @@ Screenshots land in `docs/img/` AND `frontend/public/help/` (copy first, then `n
 - [ ] AI-assisted log enrichment on the diagnosis panel
 - [ ] Chat companions for script-based agents
 - [ ] Pluggable datastore adapters (other run recorders)
+
+## Local and public branches
+
+This repository has two lines of history, on purpose:
+
+| Branch | What it is | Pushed to GitHub? |
+|---|---|---|
+| `main` | the **local** build: integrations and paths specific to one ecosystem | **never** |
+| `public` | what is published here | yes, as `main` on GitHub |
+
+A local `pre-push` hook refuses every push that does not come from `public`, so `git push`,
+`git push --all` and `git push origin main` all fail by design.
+
+**To publish a change:**
+
+```bash
+git switch public                  # or use a worktree, to keep the local build running
+git cherry-pick <commit>           # only commits that are safe to share
+git show --stat HEAD               # review: no local paths, names or internal data
+git push origin public:main
+```
+
+Anything that exists only on `main` never passes through `public`. The hook lives in
+`.git/hooks/pre-push`; it is not versioned, so a fresh clone does not have it.
 
 ## License
 

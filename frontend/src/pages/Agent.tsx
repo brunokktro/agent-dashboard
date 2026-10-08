@@ -13,9 +13,11 @@ import { StatCard, StatusBadge, TrendIcon, scoreColor } from "@/components/share
 
 const TerminalPane = lazy(() => import("@/components/TerminalPane"))
 import { DurationPercentiles } from "@/components/observability"
+import { usePageTitle } from "@/lib/title"
 
 export default function AgentPage() {
   const { name = "" } = useParams()
+  usePageTitle(name, "Agents")
   const { data } = useQuery({ queryKey: ["agent", name], queryFn: () => api.agent(name) })
 
   const trigger = useMutation({

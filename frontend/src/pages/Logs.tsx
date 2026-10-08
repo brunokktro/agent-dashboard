@@ -7,11 +7,13 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { usePageTitle } from "@/lib/title"
 
 export default function LogsPage() {
   const { data } = useQuery({ queryKey: ["logs"], queryFn: api.logs })
   const [params, setParams] = useSearchParams()
   const [selected, setSelectedRaw] = useState<string | null>(params.get("file"))
+  usePageTitle(selected, "Logs")
   const setSelected = (name: string | null) => {
     setSelectedRaw(name)
     setParams(name ? { file: name } : {}, { replace: true })

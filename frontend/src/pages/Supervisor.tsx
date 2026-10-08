@@ -12,10 +12,12 @@ import {
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet"
 import { StatusBadge } from "@/components/shared"
+import { usePageTitle } from "@/lib/title"
 
 type Facet = "all" | "failing" | "disabled" | "ok"
 
 export default function SupervisorPage() {
+  usePageTitle("Supervisor")
   const { data } = useQuery({ queryKey: ["supervisor"], queryFn: api.supervisor })
   const [, setTick] = useState(0)
   useEffect(() => {

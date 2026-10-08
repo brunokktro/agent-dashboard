@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { lazy, Suspense, useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { GitBranch, Plus, Radio, SquareTerminal, X } from "lucide-react"
 import { api } from "@/lib/api"
@@ -8,8 +8,9 @@ import { Input } from "@/components/ui/input"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
-import TerminalPane from "@/components/TerminalPane"
+const TerminalPane = lazy(() => import("@/components/TerminalPane"))
 import PipeMode from "@/components/PipeMode"
+import { usePageTitle } from "@/lib/title"
 
 interface Session {
   id: string
@@ -22,6 +23,7 @@ const loadSessions = (): Session[] => {
 }
 
 export default function ConsolePage() {
+  usePageTitle("Console")
   const { data } = useQuery({ queryKey: ["overview"], queryFn: api.overview })
   const [sessions, setSessionsRaw] = useState<Session[]>(loadSessions)
   const setSessions = (s: Session[]) => {
@@ -135,12 +137,14 @@ export default function ConsolePage() {
                 </Button>
               </div>
               <div className="min-h-0 flex-1">
-                <TerminalPane
-                  fill
-                  broadcastChannel
-                  sessionId={s.id}
-                  initialCommand={s.agent ? `kiro-cli chat --agent ${cliName[s.agent] ?? s.agent} --trust-all-tools` : undefined}
-                />
+                <Suspense fallback={<div className="h-full animate-pulse bg-muted" />}>
+                  <TerminalPane
+                    fill
+                    broadcastChannel
+                    sessionId={s.id}
+                    initialCommand={s.agent ? `kiro-cli chat --agent ${cliName[s.agent] ?? s.agent} --trust-all-tools` : undefined}
+                  />
+                </Suspense>
               </div>
             </div>
           ))}

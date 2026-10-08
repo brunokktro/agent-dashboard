@@ -51,6 +51,7 @@ export function StatCard({
   )
 }
 
+// oxlint-disable-next-line react/only-export-components -- shared display helper used by dashboard pages
 export function scoreColor(score: number, total: number): string {
   if (total === 0) return "text-muted-foreground"
   if (score >= 90) return "text-emerald-500"

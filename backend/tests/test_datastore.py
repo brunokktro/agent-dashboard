@@ -52,6 +52,30 @@ def test_queue_counts_and_items(store):
     assert states == sorted(states, key=lambda s: ["running", "pending", "failed", "done"].index(s))
 
 
+
+def test_missing_database_initializes_runs_table(tmp_path):
+    from dashboard.config import Settings
+    from dashboard.datastore import Datastore
+
+    settings = Settings(agents_dir=tmp_path / "agents")
+    assert not settings.db_path.exists()
+    with Datastore(settings).db() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    assert settings.db_path.is_file()
+
+
+def test_existing_empty_database_initializes_runs_table(tmp_path):
+    from dashboard.config import Settings
+    from dashboard.datastore import Datastore
+
+    settings = Settings(agents_dir=tmp_path / "agents")
+    settings.db_path.parent.mkdir(parents=True)
+    settings.db_path.touch()
+    assert settings.db_path.stat().st_size == 0
+    with Datastore(settings).db() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+
+
 def test_queue_item_path_rejects_traversal(store):
     p = store.queue_item_path("pending", "../../../etc/passwd")
     assert p.parent == store.s.queue_dir / "pending"
@@ -73,10 +97,14 @@ def test_score_always_0_100(tmp_path_factory, statuses):
     from dashboard.config import Settings
     from dashboard.datastore import Datastore
 
-    d = tmp_path_factory.mktemp("inv")
-    conn = sqlite3.connect(d / "runs.db")
+    # agents_dir is a subdir so db_path (agents-state sibling) is unique per
+    # hypothesis example - mktemp("inv") siblings share a parent, which would
+    # otherwise collide all examples on one runs.db.
+    settings = Settings(agents_dir=tmp_path_factory.mktemp("inv") / "agents")
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(settings.db_path)
     conn.execute(
-        "CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, "
+        "CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, "
         "started_at TEXT, duration_sec INTEGER, status TEXT, exit_code INTEGER, log_path TEXT)")
     now = datetime(2026, 8, 6, 12, 0, 0)
     for i, status in enumerate(statuses):
@@ -86,7 +114,7 @@ def test_score_always_0_100(tmp_path_factory, statuses):
     conn.commit()
     conn.close()
 
-    store = Datastore(Settings(agents_dir=d))
+    store = Datastore(settings)
     with store.db() as c:
         s = store.agent_run_stats(c, "x-agent")
     assert 0 <= s["score"] <= 100
