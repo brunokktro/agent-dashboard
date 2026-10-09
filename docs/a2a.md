@@ -2,6 +2,9 @@
 
 Dashboard route: `/a2a`. API: `GET /api/a2a`.
 
+This page is an **observer**: it renders inter-agent traffic, it does not create it. To make your
+agents produce that traffic, see [`a2a-instrumentation.md`](a2a-instrumentation.md).
+
 ## Data contracts
 
 | Artifact | Root | Shape |
