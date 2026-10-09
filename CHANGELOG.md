@@ -5,7 +5,27 @@ User-facing changes per release. The commits behind each one are recorded in
 
 ## Unreleased
 
-No unreleased changes.
+### Added
+
+- **The A2A protocol scripts ship with the repo, and `bin/init-ecosystem --a2a` installs them.**
+  `docs/a2a-instrumentation.md` told the reader to run that flag, but the installer only knew
+  `--runners` and `--service`, and the four scripts it copies were not in the tree at all, so the
+  instruction could not work. `scripts/a2a/` now carries `handoff.sh`, `discover.sh`,
+  `read-handoffs.py` and `read-discoveries.py`, and the installer copies them into the ecosystem's
+  `scripts/` -- exactly where the backend looks for its canonical readers, so `GET /api/a2a` stops
+  degrading to `available: false`. `--all` covers all three groups. An existing file is reported and
+  skipped, never silently overwritten; `--force` moves it aside to a `.bak` first.
+- **An instrumentation guide for the producer side of A2A.** `docs/a2a.md` documented what the
+  `/a2a` page observes; `docs/a2a-instrumentation.md` documents how an agent emits that traffic --
+  the handoff and discovery primitives, the queue-worker contract, the data shapes, and the
+  environment overrides that make the scripts portable. The two documents link to each other.
+
+### Fixed
+
+- **`bin/init-ecosystem` is executable again.** Two commits published through the contents API,
+  which writes every blob as `100644`, left the installer as the only file in `bin/` out of step
+  with its eight siblings -- `bin/init-ecosystem --a2a` failed with permission denied on a fresh
+  clone. The exec bit is restored on it and on the two A2A shell scripts.
 
 ## 3.3.0 - 2026-10-08
 
