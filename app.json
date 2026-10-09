@@ -59,8 +59,8 @@
     "healthCheck": "/healthz"
   },
   "setup": {
-    "onEnable": "cd frontend && [ -f dist/index.html ] || (npm ci --no-audit --no-fund && npm run build)",
-    "onEnableTimeout": 300,
+    "onEnable": "python3 -m venv .venv && ./.venv/bin/python -m pip install -q --upgrade pip && ./.venv/bin/python -m pip install -q ./backend && (cd frontend && [ -f dist/index.html ] || (npm ci --no-audit --no-fund && npm run build))",
+    "onEnableTimeout": 600,
     "configSchema": {
       "type": "object",
       "properties": {
