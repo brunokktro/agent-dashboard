@@ -8,8 +8,9 @@
 #
 #   bin/init-ecosystem                 # show what is missing and what it would do
 #   bin/init-ecosystem --runners       # write scripts/run-agent.sh + run-scheduled.sh
+#   bin/init-ecosystem --a2a           # install the A2A protocol scripts (handoff/discover + readers)
 #   bin/init-ecosystem --service       # install the launchd (macOS) / systemd unit
-#   bin/init-ecosystem --all           # both
+#   bin/init-ecosystem --all           # all three
 #   bin/init-ecosystem --runners --force   # refresh the templates, keeping a .bak copy
 #
 # Safe to run on an ALREADY INSTALLED dashboard, and safe to run twice: an
@@ -21,12 +22,13 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 AGENTS_DIR="${DASHBOARD_AGENTS_DIR:-$HOME/.kiro/agents}"
 PORT="${DASHBOARD_PORT:-7780}"
-DO_RUNNERS=0; DO_SERVICE=0; FORCE=0
+DO_RUNNERS=0; DO_SERVICE=0; DO_A2A=0; FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --runners) DO_RUNNERS=1; shift ;;
+    --a2a)     DO_A2A=1; shift ;;
     --service) DO_SERVICE=1; shift ;;
-    --all)     DO_RUNNERS=1; DO_SERVICE=1; shift ;;
+    --all)     DO_RUNNERS=1; DO_A2A=1; DO_SERVICE=1; shift ;;
     --force)   FORCE=1; shift ;;
     -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -54,10 +56,13 @@ say "ecosystem: $AGENTS_DIR"
 say "dashboard: $REPO_DIR (port $PORT)"
 say ""
 
-if [ "$DO_RUNNERS" -eq 0 ] && [ "$DO_SERVICE" -eq 0 ]; then
+if [ "$DO_RUNNERS" -eq 0 ] && [ "$DO_SERVICE" -eq 0 ] && [ "$DO_A2A" -eq 0 ]; then
   say "Current state:"
   for f in run-agent.sh run-scheduled.sh; do
     [ -f "$AGENTS_DIR/scripts/$f" ] && say "  present  scripts/$f" || say "  MISSING  scripts/$f  (Run button disabled)"
+  done
+  for f in read-handoffs.py read-discoveries.py handoff.sh discover.sh; do
+    [ -f "$AGENTS_DIR/scripts/$f" ] && say "  present  scripts/$f" || say "  MISSING  scripts/$f  (A2A page degraded)"
   done
   if [ "$(uname -s)" = "Darwin" ]; then
     # only looks for the unit THIS script installs - you may well be running
@@ -67,7 +72,7 @@ if [ "$DO_RUNNERS" -eq 0 ] && [ "$DO_SERVICE" -eq 0 ]; then
       || say "  MISSING  launchd unit com.agent-dashboard.server (if you run it another way, ignore this)"
   fi
   say ""
-  say "Nothing was written. Re-run with --runners, --service or --all."
+  say "Nothing was written. Re-run with --runners, --a2a, --service or --all."
   exit 0
 fi
 
@@ -142,6 +147,30 @@ RUNNER
   say ""
   say "  The scaffolded runners assume kiro-cli. Edit the RUN line for your setup."
   say "  Reload the dashboard page: the Run buttons are enabled now."
+  say ""
+fi
+
+if [ "$DO_A2A" -eq 1 ]; then
+  say "A2A protocol scripts:"
+  mkdir -p "$AGENTS_DIR/scripts"
+  SRC="$REPO_DIR/scripts/a2a"
+  if [ ! -d "$SRC" ]; then
+    say "  ERROR  $SRC not found - is this a full checkout?"; exit 1
+  fi
+  # The dashboard reads these from agents_dir/scripts (see backend config
+  # scripts_dir). Install them there so GET /api/a2a leaves `available: false`.
+  for f in read-handoffs.py read-discoveries.py handoff.sh discover.sh; do
+    DST="$AGENTS_DIR/scripts/$f"
+    if should_write "$DST" "scripts/$f"; then
+      cp "$SRC/$f" "$DST"
+      case "$f" in *.sh) chmod +x "$DST" ;; esac
+      made "scripts/$f"
+    fi
+  done
+  say ""
+  say "  discover.sh needs 'jq' on PATH. The readers need python3 (>=3.9)."
+  say "  Agents publish with handoff.sh / discover.sh; the /a2a page observes them."
+  say "  Instrumentation guide: docs/a2a-instrumentation.md"
   say ""
 fi
 
