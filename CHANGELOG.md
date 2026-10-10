@@ -403,7 +403,7 @@ and suggested the fix, and both are here.
   agent. Agent discovery now also carries the config's internal name
   (`cli_name`), and the agent page CLI button, Console sessions and Pipe mode
   all launch kiro-cli with it. The dashboard's own identity (runs, logs,
-   queue) stays keyed by the filename.
+  queue) stays keyed by the filename.
 - **The Run button had the same name-mismatch bug on its own path.** The
   trigger endpoint now hands the runner the resolvable name as the
   `AGENT_CLI_NAME` env var while the positional argument stays the filename
