@@ -10,16 +10,27 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import json
 import os
-import pty as _pty
 import re
-import struct
-import termios
 import time
 import uuid
 from typing import Annotated
+
+# PTY-based streaming is POSIX-only. On Windows (and any non-POSIX platform)
+# these modules do not exist; importing them unconditionally would crash the
+# whole backend at import time (ModuleNotFoundError: No module named 'fcntl'),
+# taking down every route including /healthz. Guard them and fall back to a
+# plain-pipe execution path where no tty is available.
+try:
+    import fcntl
+    import pty as _pty
+    import struct
+    import termios
+
+    _HAS_PTY = True
+except ImportError:  # pragma: no cover - platform dependent
+    _HAS_PTY = False
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -41,6 +52,8 @@ PTY_ROWS, PTY_COLS = 50, 200
 
 
 def _set_pty_size(fd: int, rows: int = PTY_ROWS, cols: int = PTY_COLS) -> None:
+    if not _HAS_PTY:
+        return
     with contextlib.suppress(OSError):
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
@@ -79,31 +92,50 @@ async def _run_chain(settings: Settings, job_id: str) -> None:
         raw = b""
         master = None
         try:
-            # PTY: kiro-cli line-buffers only on a tty -> real live streaming
-            master, slave = _pty.openpty()
-            _set_pty_size(slave)  # 0x0 would wrap the output one word per line
-            proc = await asyncio.create_subprocess_exec(
-                "kiro-cli", "chat", "--agent", step.get("cli_name") or step["agent"],
-                "--no-interactive", "--trust-all-tools",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=slave, stderr=slave,
-            )
-            os.close(slave)
-            proc.stdin.write(current_prompt.encode())
-            await proc.stdin.drain()
-            proc.stdin.close()
-            loop = asyncio.get_event_loop()
-            reader = asyncio.StreamReader()
-            transport, _ = await loop.connect_read_pipe(
-                lambda reader=reader: asyncio.StreamReaderProtocol(reader), os.fdopen(master, "rb"))
-            master = None  # owned by transport now
+            if _HAS_PTY:
+                # PTY: kiro-cli line-buffers only on a tty -> real live streaming
+                master, slave = _pty.openpty()
+                _set_pty_size(slave)  # 0x0 would wrap the output one word per line
+                proc = await asyncio.create_subprocess_exec(
+                    "kiro-cli", "chat", "--agent", step.get("cli_name") or step["agent"],
+                    "--no-interactive", "--trust-all-tools",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=slave, stderr=slave,
+                )
+                os.close(slave)
+                proc.stdin.write(current_prompt.encode())
+                await proc.stdin.drain()
+                proc.stdin.close()
+                loop = asyncio.get_event_loop()
+                reader = asyncio.StreamReader()
+                transport, _ = await loop.connect_read_pipe(
+                    lambda reader=reader: asyncio.StreamReaderProtocol(reader), os.fdopen(master, "rb"))
+                master = None  # owned by transport now
+            else:
+                # No tty available (Windows). Run with plain pipes: kiro-cli
+                # will not line-buffer the same way, but the chain still works
+                # and streams at the flush cadence below. There is no window
+                # size to set without a pty.
+                proc = await asyncio.create_subprocess_exec(
+                    "kiro-cli", "chat", "--agent", step.get("cli_name") or step["agent"],
+                    "--no-interactive", "--trust-all-tools",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                proc.stdin.write(current_prompt.encode())
+                await proc.stdin.drain()
+                proc.stdin.close()
+                transport = None
+                reader = proc.stdout
             deadline = time.time() + STEP_TIMEOUT
             last_flush = 0.0
             while True:
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     proc.kill()
-                    transport.close()
+                    if transport is not None:
+                        transport.close()
                     raise TimeoutError
                 try:
                     chunk = await asyncio.wait_for(reader.read(4096),

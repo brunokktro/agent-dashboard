@@ -10,16 +10,28 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import os
-import pty
-import struct
-import termios
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated
+
+# PTY-based terminal sessions are POSIX-only. On Windows (and any non-POSIX
+# platform) these modules do not exist; importing them unconditionally would
+# crash the whole backend at import time (ModuleNotFoundError: No module named
+# 'fcntl'), taking down every route including the portable log endpoints below
+# and /healthz. Guard them: the log tail/stream endpoints work everywhere, and
+# the terminal WebSocket degrades gracefully where no pty is available.
+try:
+    import fcntl
+    import pty
+    import struct
+    import termios
+
+    _HAS_PTY = True
+except ImportError:  # pragma: no cover - platform dependent
+    _HAS_PTY = False
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -180,6 +192,20 @@ async def _safe_send(ws: WebSocket, data: bytes, session_id: str) -> None:
 async def ws_terminal(ws: WebSocket, session: str = ""):
     global _reaper
     await ws.accept()
+
+    if not _HAS_PTY:
+        # No pty on this platform (e.g. Windows). The log endpoints above still
+        # work; only interactive terminal sessions are unavailable. Tell the
+        # client clearly and close instead of crashing on pty.fork().
+        with contextlib.suppress(Exception):
+            await ws.send_bytes(
+                b"\r\n\x1b[31m[terminal sessions are not supported on this platform]"
+                b"\x1b[0m\r\n"
+            )
+        with contextlib.suppress(Exception):
+            await ws.close(code=1011)
+        return
+
     if _reaper is None or _reaper.done():
         _reaper = asyncio.create_task(_reap_idle())
 
