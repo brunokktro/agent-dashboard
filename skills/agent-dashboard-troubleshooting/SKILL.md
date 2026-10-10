@@ -10,8 +10,14 @@ tags: [agent-dashboard, kirocrew-app, troubleshooting, install]
 
 This skill ships inside the app and is registered when the app is enabled. It
 covers the app **installed from the KiroCrew App Store**. For a standalone clone
-(`uv run uvicorn ...` on port 7780) use the `dashboard-support` agent and
-`agents/dashboard-support-data/references/install-diagnostics.md` instead.
+(`uv run uvicorn ...` on port 7780) read
+`agents/dashboard-support-data/references/install-diagnostics.md`, relative to
+the root of this tree - it ships here, and in the App Store copy too.
+
+Its companion `agents/dashboard-support.md` is an agent *definition*, not an
+installed agent: it lives in this tree and is not in your agents directory, so
+calling it by name finds nothing until you link it there. The README's
+**Support agent** section has the two `ln -s` commands.
 
 ## How the App Store install works
 
@@ -39,7 +45,16 @@ branch, which is `main` plus one generated commit carrying the built
 | Backend log (stdout/stderr of uvicorn) | `~/.kiro/crew/apps/agent-dashboard/data/logs/backend.log` |
 | Python deps provisioned by KiroCrew | `~/.kiro/crew/apps/agent-dashboard/data/.kirocrew-deps/` |
 | Per-app settings | `~/.kiro/crew/apps/agent-dashboard/data/config.json` |
-| Observed ecosystem (default) | `~/.kiro/agents/` (`runs.db`, `queue/`, `schedule.json`) |
+| Observed ecosystem root (default) | `~/.kiro/agents/` - agent specs, plus `scripts/schedule.json` and the runner scripts |
+| Live state the dashboard reads | `~/.kiro/agents-state/` - `runs.db`, `queue/`, `logs/`, `locks/` |
+
+The two directories are siblings, and the split matters when you go looking for
+data: `DASHBOARD_AGENTS_DIR` names the first one, and the dashboard derives the
+second from it (`<agents-dir>-state`, see `backend/src/dashboard/config.py`). So
+the database is **not** inside the agents directory. An older layout kept
+`runs.db` there, and a leftover empty file can still be sitting at
+`~/.kiro/agents/runs.db` - reading that one shows an empty dashboard and tells
+you nothing.
 
 ```bash
 kirocrew app info agent-dashboard      # installed version, enabled, backend state
@@ -54,8 +69,9 @@ tail -n 80 ~/.kiro/crew/apps/agent-dashboard/data/logs/backend.log
 | Install fails: `Python apps that require a build step are not supported in the desktop app` | Version 3.2.6 or older: no root `package.json`, so the installer tried `pip install` into the signed bundle | Update to 3.2.7+ from the App Store. Do not delete `requirements.txt`: the backend needs it at start |
 | Install or enable is refused with a trust message | Third-party app not yet trusted | Confirm the consent dialog. Never edit config files to bypass it |
 | Backend unhealthy, log shows `ModuleNotFoundError: fastapi` / `uvicorn` | Dependency provisioning failed (offline, proxy, private index) | Read the pip error in `backend.log`; fix network or index, then disable and re-enable the app |
-| Page opens but everything is **empty** | Correct behavior: the dashboard only reads artifacts, and `~/.kiro/agents/runs.db` does not exist yet | See "Empty on a fresh install" below |
-| Runs of one agent missing | That agent never writes to `runs.db` | Wrap its command with `bin/record-run <name> <command>` |
+| Page opens but everything is **empty** | Correct behavior: the dashboard only reads artifacts, and `~/.kiro/agents-state/runs.db` does not exist yet | See "Empty on a fresh install" below |
+| Page is empty **and** a `runs.db` does exist | You are looking at the wrong file: a leftover `~/.kiro/agents/runs.db` from the older layout. The one the dashboard reads is its sibling, `~/.kiro/agents-state/runs.db` | Compare both with `sqlite3 <file> 'select count(*) from runs'`; the live one has rows |
+| Runs of one agent missing | That agent never writes to `runs.db` | Wrap its command with `bin/record-run`, pointing `AGENTS_DIR` at the state directory - see "Empty on a fresh install" |
 | Some agents hidden | `exclude_agents` globs in `data/config.json` | Remove the pattern |
 | Run / Run-now buttons fail | `$DASHBOARD_AGENTS_DIR/scripts/run-agent.sh` or `run-scheduled.sh` missing | `bin/init-ecosystem --runners` from the app root |
 
@@ -68,7 +84,11 @@ An empty dashboard is not a bug. Give it data, from the app root
 bin/init-ecosystem                 # reports what is missing, changes nothing
 bin/install-starters               # shows what it would install, changes nothing
 bin/install-starters --scripts     # heartbeat + log-hygiene jobs, no LLM needed
-bin/record-run hello-world echo ok # one throwaway run; needs the sqlite3 CLI
+
+# record-run defaults AGENTS_DIR to ~/.kiro/agents and writes runs.db INSIDE it,
+# which is not where the dashboard reads. Point it at the state directory, or
+# the run lands in a database nothing displays:
+AGENTS_DIR=~/.kiro/agents-state bin/record-run hello-world echo ok
 ```
 
 Validate by effect, never by exit code: the run must appear in the Overview
