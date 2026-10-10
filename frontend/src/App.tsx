@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation } from "react-router-dom"
-import { lazy, Suspense, useEffect, useMemo, useState } from "react"
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { Activity, Bot, HeartPulse, ListTodo, CircleHelp, Moon, Network, Pizza as PizzaIcon, ScrollText, Settings2, SquareTerminal, Sun } from "lucide-react"
 import {
@@ -20,6 +20,7 @@ const HelpPage = lazy(() => import("@/pages/Help"))
 const A2APage = lazy(() => import("@/pages/A2A"))
 const PizzaBotPage = lazy(() => import("@/pages/PizzaBot"))
 import { UpdateCheck } from "@/components/UpdateCheck"
+import { readLastRoute, routeToRestore, writeLastRoute } from "@/lib/lastRoute"
 import { usePageTitle } from "@/lib/title"
 
 /** Any unknown path. Without this an unmatched route renders a blank page - the
@@ -65,6 +66,38 @@ const tabs = [
   { to: "/logs", label: "Logs", icon: ScrollText },
   { to: "/help", label: "Help", icon: CircleHelp },
 ]
+
+/** The route allowlist for the tab memory, derived from `tabs` so that adding
+ *  a tab above is the only edit needed to make it restorable. */
+const TAB_PATHS = tabs.map((t) => t.to)
+
+/**
+ * Keep the tab across iframe remounts: record where we are and, on a fresh
+ * boot at `/`, go back there. The KiroCrew host unmounts an app page when you
+ * navigate away and remounts the iframe pointed at `/`, so without this every
+ * trip to another app or Crew function drops you back on the Overview.
+ * lib/lastRoute carries the validation and the deliberate limits.
+ */
+function useLastRoute() {
+  const { pathname } = useLocation()
+  const navigate = useNavigate()
+  // Decided once, from the path the iframe actually booted at: reading it
+  // inside the effect would see the path we had just navigated to ourselves.
+  const target = useRef<string | null | undefined>(undefined)
+  if (target.current === undefined) {
+    target.current = routeToRestore(pathname, readLastRoute(), TAB_PATHS)
+  }
+
+  useEffect(() => {
+    if (target.current) {
+      const to = target.current
+      target.current = null
+      navigate(to, { replace: true }) // replace: Back must not bounce through `/`
+      return // the boot path is not a tab the user chose - do not record it
+    }
+    writeLastRoute(pathname)
+  }, [pathname, navigate])
+}
 
 function useLiveEvents() {
   const qc = useQueryClient()
@@ -148,6 +181,7 @@ function DarkToggle() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   useLiveEvents()
+  useLastRoute()
   const path = useLocation().pathname
   const isFullWidth = path.startsWith("/console") || path.startsWith("/pizza")
   return (

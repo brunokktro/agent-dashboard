@@ -5,6 +5,10 @@ User-facing changes per release. The commits behind each one are recorded in
 
 ## Unreleased
 
+No unreleased changes.
+
+## 3.3.1 - 2026-10-10
+
 ### Added
 
 - **The A2A protocol scripts ship with the repo, and `bin/init-ecosystem --a2a` installs them.**
@@ -19,6 +23,17 @@ User-facing changes per release. The commits behind each one are recorded in
   `/a2a` page observes; `docs/a2a-instrumentation.md` documents how an agent emits that traffic --
   the handoff and discovery primitives, the queue-worker contract, the data shapes, and the
   environment overrides that make the scripts portable. The two documents link to each other.
+
+### Changed
+
+- **The dashboard reopens on the tab you were using.** Inside KiroCrew the dashboard is an
+  embedded page, and the host unmounts it when you move to another app or Crew function - coming
+  back remounted it on the Overview, dropping the Logs, Board or Console tab you were working in.
+  The dashboard now records its own position and returns there on the next load. A deep link, or
+  a reload while on a page, is never overridden; a stored path that is not a live route is
+  ignored; and the memory lives in this browser, so clearing site data simply starts again on
+  the Overview. The embedded page is still reloaded on return - the WebSocket reconnects and the
+  scroll position resets - because only the host can keep it mounted.
 
 ### Fixed
 

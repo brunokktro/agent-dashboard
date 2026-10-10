@@ -2,6 +2,12 @@
 
 > Session log of architectural decisions. Newest first.
 
+## 2026-10-10 - Decisions from the embedded-page lifecycle
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 16 | **The SPA remembers its own route; the host shell is not involved** | Inside KiroCrew an app page is an ordinary lazy React Router element, so navigating to another app unmounts it and returning mounts a fresh iframe pointed at `/`. The host cannot be asked to keep it mounted: an app manifest declares only `entry`, `pages`, `overlays` and `sidebar`, and the host's own keep-mounted pattern (side-panel tabs hidden with `display:none`) is not reachable from a third-party app. Persisting in the shell instead would need a cross-origin `postMessage` bridge plus an origin check, and would still not keep the iframe alive. So the SPA records its path in its own `localStorage` and restores it when it next boots at `/`: no new surface, no cross-origin trust decision, and it degrades to the previous behaviour wherever storage is unavailable. The stored path is validated against the live tab list rather than trusted, because anything in this origin can write it. What this does NOT fix is the remount itself - the iframe still reloads, so the WebSocket reconnects and the scroll resets. That half belongs to the host |
+
 ## 2026-09-25 - Decisions from the App Store install
 
 | # | Decision | Rationale |

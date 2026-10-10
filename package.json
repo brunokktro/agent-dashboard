@@ -1,6 +1,6 @@
 {
   "name": "agent-dashboard",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "private": true,
   "description": "Installer marker, not a Node project: no dependencies and no build script on purpose. See docs/DECISIONS.md #14."
 }
