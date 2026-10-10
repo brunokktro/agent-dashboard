@@ -5,7 +5,22 @@ User-facing changes per release. The commits behind each one are recorded in
 
 ## Unreleased
 
-No unreleased changes.
+### Fixed
+
+- **The troubleshooting skill pointed at the wrong database.** It named
+  `~/.kiro/agents/runs.db` as the file the dashboard reads, but the dashboard derives its
+  state directory as a sibling of the agents directory, so the live database is
+  `~/.kiro/agents-state/runs.db`. The old layout can leave an empty `runs.db` behind at the
+  path the skill named, and reading that one shows an empty dashboard and tells you nothing -
+  so the skill now lists both directories, says which holds what, and carries a symptom row
+  for exactly that mix-up. Its `bin/record-run` example was writing into the same unread
+  database; it now points `AGENTS_DIR` at the state directory, so a recorded run actually
+  shows up.
+- **The troubleshooting skill implied a support agent you could just call.** It said to "use
+  the `dashboard-support` agent". The agent definition ships in this tree but is not installed
+  in anyone's agents directory, so calling it by name finds nothing. The skill now points at
+  the diagnostics reference that ships alongside it and names the README section with the two
+  link commands.
 
 ## 3.3.1 - 2026-10-10
 
@@ -388,7 +403,7 @@ and suggested the fix, and both are here.
   agent. Agent discovery now also carries the config's internal name
   (`cli_name`), and the agent page CLI button, Console sessions and Pipe mode
   all launch kiro-cli with it. The dashboard's own identity (runs, logs,
-  queue) stays keyed by the filename.
+   queue) stays keyed by the filename.
 - **The Run button had the same name-mismatch bug on its own path.** The
   trigger endpoint now hands the runner the resolvable name as the
   `AGENT_CLI_NAME` env var while the positional argument stays the filename
