@@ -10,16 +10,30 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import json
 import os
-import pty as _pty
 import re
 import struct
-import termios
 import time
 import uuid
 from typing import Annotated
+
+# PTY-based live streaming relies on Unix-only modules (fcntl, pty, termios).
+# On Windows these do not exist, so import them lazily and expose a flag the
+# rest of the module checks. Importing this file must never crash the whole
+# app backend just because one feature (the /api/pipe agent chain) can't run
+# on this platform.
+try:
+    import fcntl
+    import pty as _pty
+    import termios
+
+    _PTY_AVAILABLE = True
+except ImportError:  # pragma: no cover - Windows and other non-Unix platforms
+    fcntl = None  # type: ignore[assignment]
+    _pty = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+    _PTY_AVAILABLE = False
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -41,6 +55,8 @@ PTY_ROWS, PTY_COLS = 50, 200
 
 
 def _set_pty_size(fd: int, rows: int = PTY_ROWS, cols: int = PTY_COLS) -> None:
+    if not _PTY_AVAILABLE:
+        return
     with contextlib.suppress(OSError):
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
@@ -69,6 +85,20 @@ def _clean(raw: str) -> str:
 
 async def _run_chain(settings: Settings, job_id: str) -> None:
     job = _jobs[job_id]
+    if not _PTY_AVAILABLE:
+        # The agent-chain runner spawns kiro-cli through a Unix pseudo-terminal,
+        # which has no equivalent on this platform. Fail the job honestly so the
+        # UI shows a clear reason instead of a generic crash.
+        for step in job["steps"]:
+            step["status"] = "failed"
+            step["output"] = (
+                "The agent pipe feature is not supported on this platform "
+                "(requires a Unix pseudo-terminal; fcntl/pty/termios are "
+                "unavailable on Windows)."
+            )
+        job["status"] = "failed"
+        _persist(settings, job_id)
+        return
     current_prompt = job["prompt"]
     for step in job["steps"]:
         step["status"] = "running"

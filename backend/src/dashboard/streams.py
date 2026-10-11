@@ -10,15 +10,27 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import os
-import pty
 import struct
-import termios
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Server-side terminal sessions rely on Unix-only modules (fcntl, pty,
+# termios). These do not exist on Windows, so import them lazily behind a
+# flag: a missing module must not crash the entire app backend at import.
+try:
+    import fcntl
+    import pty
+    import termios
+
+    _PTY_AVAILABLE = True
+except ImportError:  # pragma: no cover - Windows and other non-Unix platforms
+    fcntl = None  # type: ignore[assignment]
+    pty = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+    _PTY_AVAILABLE = False
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -101,6 +113,13 @@ _reaper: asyncio.Task | None = None
 
 
 def _spawn(session_id: str) -> PtySession:
+    if not _PTY_AVAILABLE:
+        raise HTTPException(
+            501,
+            "The in-browser terminal is not supported on this platform "
+            "(requires a Unix pseudo-terminal; fcntl/pty/termios are "
+            "unavailable on Windows).",
+        )
     shell = os.environ.get("SHELL", "/bin/zsh")
     pid, fd = pty.fork()
     if pid == 0:  # child
