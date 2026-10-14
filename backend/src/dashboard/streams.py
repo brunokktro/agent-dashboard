@@ -2,8 +2,8 @@
 
 Terminal sessions are registered server-side by id. A page refresh or WS
 drop does NOT kill the PTY: the client reconnects with the same session id
-and reattaches (receiving the recent output buffer). Idle detached sessions
-are reaped after IDLE_TTL.
+and reattaches (receiving the recent output buffer). A detached idle shell is
+reaped after IDLE_TTL; a detached foreground command or agent gets ACTIVE_TTL.
 """
 
 from __future__ import annotations
@@ -28,7 +28,8 @@ from .config import Settings, get_settings
 
 router = APIRouter()
 
-IDLE_TTL = 15 * 60  # keep detached PTYs for 15 minutes
+IDLE_TTL = 15 * 60  # detached shell with no foreground process
+ACTIVE_TTL = 8 * 60 * 60  # detached command or agent, aligned with max chat turn
 BUFFER_BYTES = 200_000
 # A pty is born 0x0, so anything the shell prints before xterm.js sends its
 # first resize would wrap one word per line. Start from a sane window.
@@ -129,12 +130,28 @@ def _kill(session_id: str) -> None:
         os.kill(sess.pid, 15)
 
 
+def _has_foreground_process(sess: PtySession) -> bool:
+    """Whether the PTY is running something in front of its login shell."""
+    try:
+        return os.tcgetpgrp(sess.fd) != os.getpgid(sess.pid)
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def _should_reap(sess: PtySession, now: float) -> bool:
+    """Apply the short idle lease or the bounded active-work lease."""
+    if sess.client is not None or sess.detached_at is None:
+        return False
+    ttl = ACTIVE_TTL if _has_foreground_process(sess) else IDLE_TTL
+    return now - sess.detached_at > ttl
+
+
 async def _reap_idle() -> None:
     while True:
         await asyncio.sleep(60)
         now = time.time()
         for sid, sess in list(_sessions.items()):
-            if sess.client is None and sess.detached_at and now - sess.detached_at > IDLE_TTL:
+            if _should_reap(sess, now):
                 _kill(sid)
 
 

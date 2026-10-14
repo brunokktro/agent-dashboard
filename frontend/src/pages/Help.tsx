@@ -289,9 +289,10 @@ const SECTIONS: Section[] = [
         body: (
           <UL items={[
             "Up to 6 terminals side by side. 'Plain shell' or pick an agent - agent sessions open kiro-cli chat automatically with tool confirmations off.",
-            <><b>Sessions survive refresh:</b> the server keeps each terminal alive for 15
-            minutes and replays the recent output when you reconnect. The X button kills a
-            session for real.</>,
+            <><b>Sessions survive refresh:</b> the server keeps a detached idle shell for 15
+            minutes and a foreground command or agent for up to 8 hours, replaying recent
+            output when you reconnect. The X button and <K>/quit</K> end the session; an app
+            update or backend restart also ends in-memory terminals.</>,
             "Broadcast bar (2+ terminals): type once, Enter, and the text goes to ALL sessions - ask several agents the same thing simultaneously.",
           ]} />
         ),
@@ -379,7 +380,8 @@ const SECTIONS: Section[] = [
             "Pick a file on the left; it streams live on the right (new lines within 1 second).",
             "Errors are red, warnings amber, successes green. 'Pause follow' stops auto-scroll.",
             <>The URL carries <K>?file=name.log</K> - links from failure alerts land here with
-            the right file open, and you can bookmark/share a specific log.</>,
+            the right file open, you can bookmark/share a specific log, and leaving the app then
+            returning reopens that exact file.</>,
           ]} />
         ),
       },

@@ -338,7 +338,7 @@ Screenshots land in `docs/img/` AND `frontend/public/help/` (copy first, then `n
 ## Notable design details
 
 - **Failure diagnosis** isolates the failing run's own log window (by timestamp) and matches known patterns - expired auth, missing dependencies, PATH issues, rate limits, timeouts - into "probable cause" hints.
-- **Terminal sessions are durable**: each PTY lives server-side keyed by session id; a page refresh reattaches and replays recent output (15 min TTL).
+- **Terminal sessions are durable**: each PTY lives server-side keyed by session id; a page refresh reattaches and replays recent output. Detached idle shells expire after 15 minutes; a foreground command or agent remains alive for up to 8 hours.
 - **Pipe jobs are durable too**: persisted to disk, they survive backend restarts and are reported honestly as `lost` if their process died with the server.
 - **Directory is the source of truth** for queue state - the JSON `status` field is display-only.
 - **Everything real-time** falls back gracefully: if the WebSocket drops, 10s polling keeps the UI honest.

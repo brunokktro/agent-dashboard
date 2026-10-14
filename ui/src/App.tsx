@@ -1,5 +1,6 @@
 import { useAppApi } from '@kirocrew/app-sdk'
 import { Card, CardTitle, PageHeader } from '@kirocrew/app-sdk/ui'
+import { resolveAppHost } from './appHost'
 import { useEffect, useState } from 'react'
 
 /**
@@ -17,12 +18,21 @@ export default function AgentDashboard() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    // The KiroCrew proxy forwards /apps/<name>/api/* to the backend's /api/*,
-    // so the port discovery endpoint must live under /api/.
-    api
-      .get('/apps/agent-dashboard/api/apphost')
-      .then((h: { status: string; port: number }) => setPort(h.port))
-      .catch((e: Error) => setError(e.message))
+    let cancelled = false
+    setError(null)
+
+    // KiroCrew may mount this wrapper before an updated backend has registered
+    // its dynamic port. Retry that expected startup race, but fail visibly if
+    // the backend is still unavailable after the bounded window.
+    resolveAppHost(() => api.get('/apps/agent-dashboard/api/apphost'))
+      .then((host) => {
+        if (!cancelled) setPort(host.port)
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message)
+      })
+
+    return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

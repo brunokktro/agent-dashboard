@@ -5,7 +5,27 @@ User-facing changes per release. The commits behind each one are recorded in
 
 ## Unreleased
 
+## 3.3.2 - 2026-10-14
+
+### Changed
+
+- **The dashboard restores the exact log you were viewing.** The selected file already lives
+  in the `?file=` query string, but tab memory recorded only `/logs`, so returning to the app
+  reopened the Logs page with no file selected. The stored destination now carries one strictly
+  validated `.log` file parameter and rejects every other query shape.
+- **Detached work can finish a full KiroCrew turn.** An idle shell still expires after 15
+  minutes, while a foreground command or agent remains alive for up to 8 hours. Reattaching
+  uses the same PTY and replays its bounded output buffer; X, `/quit`, app update and backend
+  restart remain explicit session boundaries.
+
 ### Fixed
+
+- **The KiroCrew app wrapper now waits for the managed backend after an update.**
+  KiroCrew can remount the wrapper before the updated backend has registered its dynamic
+  port; the previous one-shot lookup stored that transient 502 forever even after the
+  backend became healthy. The wrapper now validates and retries the app-host lookup for up
+  to 15 seconds, cancels cleanly on unmount, and still shows a diagnostic when the bounded
+  window expires.
 
 - **The troubleshooting skill pointed at the wrong database.** It named
   `~/.kiro/agents/runs.db` as the file the dashboard reads, but the dashboard derives its

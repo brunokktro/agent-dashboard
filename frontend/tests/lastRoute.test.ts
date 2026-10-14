@@ -55,6 +55,30 @@ test("does nothing when there is nothing to restore", () => {
   assert.equal(routeToRestore("/", "/", TABS), null) // already the destination
 })
 
+test("restores the exact selected log after an iframe remount", () => {
+  assert.equal(
+    routeToRestore("/", "/logs?file=gateway.log", TABS),
+    "/logs?file=gateway.log",
+  )
+  assert.equal(
+    routeToRestore("/", "/logs?file=worker%20one.log", TABS),
+    "/logs?file=worker%20one.log",
+  )
+})
+
+test("accepts no other query state from storage", () => {
+  for (const invalid of [
+    "/logs?file=../secret.log",
+    "/logs?file=folder%2Fsecret.log",
+    "/logs?file=gateway.txt",
+    "/logs?file=gateway.log&file=other.log",
+    "/logs?file=gateway.log&follow=false",
+    "/health?file=gateway.log",
+  ]) {
+    assert.equal(routeToRestore("/", invalid, TABS), null, `accepted ${invalid}`)
+  }
+})
+
 test("ignores a path that is not a live route", () => {
   assert.equal(routeToRestore("/", "/does-not-exist", TABS), null)
   assert.equal(routeToRestore("/", "/logs/extra", TABS), null)

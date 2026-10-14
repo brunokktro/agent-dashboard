@@ -79,8 +79,9 @@ const TAB_PATHS = tabs.map((t) => t.to)
  * lib/lastRoute carries the validation and the deliberate limits.
  */
 function useLastRoute() {
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
   const navigate = useNavigate()
+  const destination = `${pathname}${search}`
   // Decided once, from the path the iframe actually booted at: reading it
   // inside the effect would see the path we had just navigated to ourselves.
   const target = useRef<string | null | undefined>(undefined)
@@ -95,8 +96,8 @@ function useLastRoute() {
       navigate(to, { replace: true }) // replace: Back must not bounce through `/`
       return // the boot path is not a tab the user chose - do not record it
     }
-    writeLastRoute(pathname)
-  }, [pathname, navigate])
+    writeLastRoute(destination)
+  }, [pathname, search, destination, navigate])
 }
 
 function useLiveEvents() {

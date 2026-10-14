@@ -20,10 +20,10 @@
  * -----------------
  *  * Only a boot at `/` restores. A deep link, or a reload while on `/logs`,
  *    is explicit intent and is never overridden.
- *  * The stored path is validated against the live route table before use,
- *    never navigated to blindly. Anything running in this origin can write
- *    localStorage and `navigate()` accepts whatever string it is handed, so
- *    an unrecognised value is ignored rather than trusted.
+ *  * The stored destination is validated against the live route table before use.
+ *    The only query state accepted is one safe `file` parameter on `/logs`, so
+ *    returning to Logs can reopen the exact file without turning localStorage
+ *    into a generic navigation input.
  *  * Storage failure is not an error. Partitioned or disabled storage simply
  *    turns the feature off; it must never break the dashboard.
  *  * The key lives in this iframe's own origin, which includes the backend's
@@ -37,6 +37,23 @@ const KEY = "agent-dashboard:last-route"
  *  come from directory entries, so the charset is deliberately narrow and the
  *  length is bounded: this is a validator, not a parser. */
 const AGENT_PATH = /^\/agent\/[A-Za-z0-9._-]{1,64}$/
+
+/** Mirror the backend log-name boundary before restoring a selected file. */
+function isSelectedLogPath(stored: string): boolean {
+  if (!stored.startsWith("/logs?")) return false
+  try {
+    const url = new URL(stored, "http://dashboard.local")
+    if (url.origin !== "http://dashboard.local" || url.pathname !== "/logs" || url.hash)
+      return false
+    const entries = [...url.searchParams.entries()]
+    if (entries.length !== 1 || entries[0][0] !== "file") return false
+    const name = entries[0][1]
+    return name.length > 0 && name.length <= 255
+      && !name.includes("/") && !name.includes("..") && name.endsWith(".log")
+  } catch {
+    return false
+  }
+}
 
 /** The last recorded path, or null when there is nothing usable to read. */
 export function readLastRoute(): string | null {
@@ -70,6 +87,7 @@ export function routeToRestore(
 ): string | null {
   if (current !== "/") return null // deep link or reload: the user's intent wins
   if (!stored || stored === "/") return null // already where we would send them
-  if (known.includes(stored) || AGENT_PATH.test(stored)) return stored
+  if (known.includes(stored) || AGENT_PATH.test(stored) || isSelectedLogPath(stored))
+    return stored
   return null // unknown, stale or forged: ignore it
 }
