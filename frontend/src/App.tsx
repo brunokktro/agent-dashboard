@@ -21,6 +21,7 @@ const A2APage = lazy(() => import("@/pages/A2A"))
 const PizzaBotPage = lazy(() => import("@/pages/PizzaBot"))
 import { UpdateCheck } from "@/components/UpdateCheck"
 import { readLastRoute, routeToRestore, writeLastRoute } from "@/lib/lastRoute"
+import { installHostThemeBridge, isHostControlled } from "@/lib/hostTheme"
 import { usePageTitle } from "@/lib/title"
 
 /** Any unknown path. Without this an unmatched route renders a blank page - the
@@ -167,9 +168,16 @@ function CommandPalette() {
 }
 
 function DarkToggle() {
-  const [dark, setDark] = useState(() => localStorage.getItem("theme") === "dark")
+  // Under an embedding host the bridge owns the mode (isHostControlled), so
+  // the toggle reads the live class rather than a possibly-stale localStorage
+  // entry; the write stays so a standalone later boot remembers the choice.
+  const [dark, setDark] = useState(() =>
+    isHostControlled()
+      ? document.documentElement.classList.contains("dark")
+      : localStorage.getItem("theme") === "dark",
+  )
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark)
+    if (!isHostControlled()) document.documentElement.classList.toggle("dark", dark)
     localStorage.setItem("theme", dark ? "dark" : "light")
   }, [dark])
   return (
@@ -226,6 +234,10 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  // The KiroCrew host (cross-origin iframe embedding) posts the dashboard's
+  // theme to us; standalone boots fall back to localStorage + the OS. Once at
+  // the app root, before any page renders.
+  useEffect(() => installHostThemeBridge(), [])
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
