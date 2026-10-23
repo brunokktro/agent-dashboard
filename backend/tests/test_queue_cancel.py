@@ -66,10 +66,10 @@ def _client(settings: Settings) -> TestClient:
 
 
 def _seed(s: Settings, ident: str, a2a: bool = True, state: str = "pending") -> Path:
-    item = {"id": ident, "agent": "devex-agent", "status": state, "attempts": 0,
+    item = {"id": ident, "agent": "worker", "status": state, "attempts": 0,
             "created": "2026-10-13T06:00:00+00:00"}
     if a2a:
-        item["params"] = {"source": "a2a-handoff", "handoff_id": ident, "from": "agent-pm"}
+        item["params"] = {"source": "a2a-handoff", "handoff_id": ident, "from": "orchestrator"}
     path = s.queue_dir / state / f"{ident}.json"
     path.write_text(json.dumps(item, indent=2))
     return path
@@ -86,7 +86,7 @@ def _events(s: Settings, ident: str) -> list[dict]:
 def _one_terminal_event(s: Settings, ident: str) -> bool:
     ev = _events(s, ident)
     return (len(ev) == 1 and ev[0]["status"] == "canceled"
-            and ev[0]["to"] == "agent-pm" and ev[0]["ts"].endswith("Z"))
+            and ev[0]["to"] == "orchestrator" and ev[0]["ts"].endswith("Z"))
 
 
 def _module(s: Settings):
