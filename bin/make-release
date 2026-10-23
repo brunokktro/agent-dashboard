@@ -23,8 +23,8 @@ Usage
     bin/make-release --no-build   # publish whatever is already built
     bin/make-release --dry-run    # show what would be published
 
-Auth: a GitHub token from the environment (GITHUB_TOKEN), or the local
-github-power MCP config when present. The token is never printed.
+Auth: a GitHub token from the environment (GITHUB_TOKEN), or
+~/.kiro/secrets/github.env (the github-power secrets file) when present. The token is never printed.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,17 +46,19 @@ REPO_DIR = Path(__file__).resolve().parents[1]
 BUNDLE_DIRS = ("frontend/dist", "ui/dist")
 BRANCH = "release"
 # text extensions are pushed as utf-8 blobs, everything else as base64
-MCP_CONFIG = Path.home() / ".kiro/powers/installed/github-power/mcp.json"
+SECRETS_ENV = Path.home() / ".kiro/secrets/github.env"  # GITHUB_PERSONAL_ACCESS_TOKEN=...
 
 
 def token() -> str:
     if os.environ.get("GITHUB_TOKEN"):
         return os.environ["GITHUB_TOKEN"]
     try:
-        cfg = json.loads(MCP_CONFIG.read_text())
-        return cfg["mcpServers"]["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"]
-    except (OSError, KeyError, json.JSONDecodeError):
-        sys.exit("no GitHub token: set GITHUB_TOKEN")
+        m = re.search(r'GITHUB_PERSONAL_ACCESS_TOKEN=["\']?([^"\'\n]+)', SECRETS_ENV.read_text())
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    sys.exit(f"no GitHub token: set GITHUB_TOKEN or write it to {SECRETS_ENV}")
 
 
 def stage_and_scan(head: str, files: list[Path], output: Path | None) -> None:
