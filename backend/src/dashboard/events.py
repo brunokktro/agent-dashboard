@@ -15,11 +15,13 @@ import asyncio
 import contextlib
 import json
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
-from .config import get_settings
+from .config import Settings, get_settings
 from .datastore import Datastore
+from .guard import websocket_allowed
 
 router = APIRouter()
 _clients: set[WebSocket] = set()
@@ -67,8 +69,11 @@ async def _watcher() -> None:
 
 
 @router.websocket("/ws/events")
-async def ws_events(ws: WebSocket) -> None:
+async def ws_events(ws: WebSocket, settings: Annotated[Settings, Depends(get_settings)]) -> None:
     global _watcher_task
+    if not websocket_allowed(ws.headers, settings):
+        await ws.close(code=1008)
+        return
     await ws.accept()
     _clients.add(ws)
     if _watcher_task is None or _watcher_task.done():

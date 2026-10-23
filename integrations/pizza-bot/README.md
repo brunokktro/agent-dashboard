@@ -10,7 +10,7 @@ adds those, so a fresh checkout produces a tab that actually works instead of an
 Upstream is [`pizza-bot-app/pizza-bot`](https://github.com/pizza-bot-app/pizza-bot), Apache-2.0, and
 it is not ours. Vendoring it here would copy ~72,000 lines of UI and runtime into this repo, which is
 the thing [`docs/pizza.md`](../../docs/pizza.md) deliberately avoids, and it would create a sync debt
-with a project that keeps moving. The bridge itself is 27 files. Shipping only the bridge keeps the
+with a project that keeps moving. The bridge itself is 31 files. Shipping only the bridge keeps the
 boundary honest: upstream stays upstream, ours stays ours, and the base it applies to is written down.
 
 ## Contents
@@ -57,7 +57,9 @@ thread. Delivery is durable: the request is queued by an external handoff script
 auto-created `Sent` folder and closes the pane; the reply pulls it back to the inbox as unread with
 the whole exchange concatenated; replying re-files it under Sent. The recipient preselects the
 conversation's counterpart, the sidebar has a selection mode with bulk delete, and needs-input
-replies still land in `Action Required`.
+replies still land in `Action Required`. Selection mode can pick by date group and read state in one
+go (pinned and still-waiting letters are skipped), and `GET /threads/list` honors a clamped `?limit`
+(default 200, max 2000) so the inbox loads its whole history.
 
 **Sent-and-waiting visibility** in the web UI: a per-thread badge naming the target and where the
 letter sits in the delivery queue (`Queued · N ahead`, then `is working · 3m`; `PIZZA_KIRO_QUEUE_DIR`
@@ -83,5 +85,11 @@ git diff --binary "$(git merge-base origin/main HEAD)"..HEAD > \
 ```
 
 Then update `base` in `UPSTREAM` if the merge-base moved, and re-run `apply.sh` against a pristine
-checkout to confirm it still applies. The fixtures use neutral agent names on purpose; keep real
+checkout to confirm it still applies.
+
+The sidecar branch can carry work that is not ready to ship here (it did on 2026-10-23: an A2A
+gateway still in review). In that case do not diff the whole branch: apply the current patch to a
+detached checkout of the base, cherry-pick only the commits being published, test that tree, and emit
+the patch from it. `git write-tree` after `apply.sh` on a second pristine checkout must equal the
+tested tree. The fixtures use neutral agent names on purpose; keep real
 agent inventory out of anything published here.

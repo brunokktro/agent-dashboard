@@ -7,17 +7,21 @@ import json
 import os
 import subprocess
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from pydantic import BaseModel
 
+from . import a2a
 from .config import Settings, get_settings
 from .datastore import Datastore
 
 router = APIRouter()
+
+# Failed-run alert renders at most this many items; its total and Ack ids are uncapped.
+ALERT_ITEMS_LIMIT = 10
 
 
 def _store(settings: Annotated[Settings, Depends(get_settings)]) -> Datastore:
@@ -207,16 +211,21 @@ def api_overview(store: Store, settings: Annotated[Settings, Depends(get_setting
                            "message": f"Large log(s): {', '.join(f'{n} ({m}MB)' for n, m in big)}"})
         if running:
             alerts.append({"type": "info", "message": f"Running now: {', '.join(running)}"})
+        # No LIMIT here: the alert total and the Ack ids must cover EVERY unacked
+        # failure in the window. Only the rendered list is capped.
         failures = conn.execute(
             "SELECT id, job_id, started_at, exit_code, duration_sec, log_path FROM runs "
-            "WHERE started_at > ? AND status='failed' ORDER BY id DESC LIMIT 10", (day_ago_s,)
+            "WHERE started_at > ? AND status='failed' ORDER BY id DESC", (day_ago_s,)
         ).fetchall()
         acked = store.load_acked()
         unacked = [dict(f) for f in failures if str(f["id"]) not in acked]
         if unacked:
+            message = f"{len(unacked)} failed run(s) in last 24h"
+            if len(unacked) > ALERT_ITEMS_LIMIT:
+                message += f" (showing latest {ALERT_ITEMS_LIMIT})"
             alerts.append({"type": "fail",
-                           "message": f"{len(unacked)} failed run(s) in last 24h",
-                           "items": unacked,
+                           "message": message,
+                           "items": unacked[:ALERT_ITEMS_LIMIT],
                            "ids": ",".join(str(f["id"]) for f in unacked)})
 
         def is_running(name: str) -> bool:
@@ -446,18 +455,47 @@ def queue_retry(item_id: str, store: Store):
 
 
 @router.post("/api/queue/cancel/{item_id}")
-def queue_cancel(item_id: str, store: Store):
+def queue_cancel(item_id: str, store: Store, settings: Annotated[Settings, Depends(get_settings)]):
+    """Cancel a PENDING item. Delegates to the canonical ``queue_lifecycle.dashboard_cancel``, which
+    claims with the dispatcher's own arbiter and, for an A2A item, settles the queue and its ONE
+    terminal ``canceled`` audit event together. Never notifies."""
     src = store.find_queue_item("pending", item_id)
+    ident = src.stem if src else Path(item_id).name
+    if not ident or ident.startswith("."):
+        raise HTTPException(404, "item not found in pending")
+    lc = a2a.lifecycle(settings)
+    if lc is None:
+        return _cancel_without_lifecycle(src, store)
+    audit = a2a.A2APaths(settings).handoffs
+    rc, state = lc.dashboard_cancel(settings.queue_dir, settings.lock_dir, ident, audit)
+    if rc == lc.CANCEL_OK:
+        return {"ok": True, "state": state}
+    if rc == lc.CANCEL_TERMINAL and lc.is_canceled(state):
+        return {"ok": True, "state": lc.CANCELED, "already": True}  # repeated click: idempotent
+    if rc == lc.CANCEL_ABSENT:
+        raise HTTPException(404, "item not found in pending")
+    if rc == lc.CANCEL_BUSY:
+        raise HTTPException(409, "the dispatcher already claimed this item - it is running")
+    raise HTTPException(409, f"item is already terminal ({state})")
+
+
+def _cancel_without_lifecycle(src: Path | None, store: Datastore) -> dict:
+    """Fallback for an ecosystem without ``queue_lifecycle.py`` (fresh install, other host).
+    Plain items keep working; an A2A item is REFUSED, because canceling it here would leave its
+    handoff open in the audit forever (the exact gap fixed on 13/10/2026)."""
     if not src:
         raise HTTPException(404, "item not found in pending")
     item = json.loads(src.read_text())
-    item.update(status="cancelled", result="Cancelled via dashboard",
-                completedAt=datetime.now().isoformat())
-    dst = store.queue_item_path("done", item_id)
+    if (item.get("params") or {}).get("source") == a2a.A2A_SOURCE:
+        raise HTTPException(503, f"{a2a.LIFECYCLE_SCRIPT} not available - refusing to cancel an "
+                                 "A2A item without its terminal audit event")
+    item.update(status="canceled", result="canceled via dashboard",
+                completedAt=datetime.now(UTC).isoformat())
+    dst = store.queue_item_path("done", src.stem)
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(json.dumps(item, indent=2))
     src.unlink()
-    return {"ok": True}
+    return {"ok": True, "state": "canceled"}
 
 
 @router.post("/api/queue/enqueue")

@@ -358,7 +358,10 @@ const SECTIONS: Section[] = [
               <><b>Reply again → it leaves again.</b> Opening the thread preselects the agent in
               the To field; sending re-files it under Sent and the cycle repeats.</>,
               <>Multi-select: the checkbox button next to the filters turns on selection mode for
-              bulk delete.</>,
+              bulk delete. Two pickers select in one go by date (<i>Today</i>, <i>This week</i>,{" "}
+              <i>This month</i>, <i>Before this month</i>) and by read state, inside the current
+              filter or folder; the windows follow the list's own date groups, so the count matches
+              the headers. Pinned and still-waiting conversations are never picked - tick them by hand.</>,
             ]} />
             <P>Messages <b>to the Pizza Bot itself</b> are a normal streaming chat - mail semantics
             apply only to agent handoffs. If the tab shows a banner instead of the inbox, the

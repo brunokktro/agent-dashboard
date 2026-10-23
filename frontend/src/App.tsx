@@ -3,7 +3,7 @@ import { api } from "@/lib/api"
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation } from "react-router-dom"
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Activity, Bot, HeartPulse, ListTodo, CircleHelp, Moon, Network, Pizza as PizzaIcon, ScrollText, Settings2, SquareTerminal, Sun } from "lucide-react"
+import { Activity, Bot, ClipboardList, HeartPulse, ListTodo, CircleHelp, Moon, Network, Pizza as PizzaIcon, ScrollText, Settings2, SquareTerminal, Sun } from "lucide-react"
 import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command"
@@ -58,6 +58,7 @@ const tabs = [
   { to: "/", label: "Overview", icon: Activity },
   { to: "/agents", label: "Agents", icon: Bot },
   { to: "/queue", label: "Board", icon: ListTodo },
+  { to: "/backlog", label: "Backlog", icon: ClipboardList },
   { to: "/a2a", label: "A2A", icon: Network },
   { to: "/pizza", label: "Pizza", icon: PizzaIcon },
   { to: "/health", label: "Health", icon: HeartPulse },
@@ -236,6 +237,7 @@ export default function App() {
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/agent/:name" element={<AgentPage />} />
               <Route path="/queue" element={<QueuePage />} />
+              <Route path="/backlog" element={<QueuePage />} />
               <Route path="/a2a" element={<A2APage />} />
               <Route path="/pizza" element={<PizzaBotPage />} />
               <Route path="/health" element={<HealthPage />} />

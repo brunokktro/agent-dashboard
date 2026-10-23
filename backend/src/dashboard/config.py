@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # Site-specific destinations stay in config, out of the code.
     redirects: dict[str, str] = {}
 
+    # ``host:port`` pairs allowed to call the guarded write endpoints (Host and
+    # Origin must both match - see guard.py). Empty means localhost and
+    # 127.0.0.1 on ``port``. Set it when a proxy serves the UI under another name.
+    write_hosts: list[str] = []
+
     # Alert thresholds
     big_log_mb: int = 50
     stuck_after_minutes: int = 30
@@ -94,7 +99,7 @@ def get_settings() -> Settings:
 # paths and service wiring stay env/manifest-owned).
 _HOST_CONFIG_KEYS = ("exclude_agents", "include_agents", "extra_hints",
                      "big_log_mb", "stuck_after_minutes", "job_agent_overrides",
-                     "agent_deps", "upstream_repo", "redirects")
+                     "agent_deps", "upstream_repo", "redirects", "write_hosts")
 
 
 def build_settings() -> Settings:

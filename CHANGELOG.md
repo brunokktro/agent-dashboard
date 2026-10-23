@@ -5,6 +5,48 @@ User-facing changes per release. The commits behind each one are recorded in
 
 ## Unreleased
 
+### Added
+
+- **Pizza inbox selects in bulk by date and read state.** Selection mode used to mean ticking every
+  conversation by hand, which an inbox of 238 agent letters makes impractical. Two pickers now select
+  in one go by date (`Today`, `This week`, `This month`, `Before this month`) and by read state,
+  inside the current filter or folder. The windows are unions of the list's own date groups, so the
+  count matches the headers; groups holding picks expand, and pinned, still-waiting and running
+  conversations are never picked. The inbox also loads up to 2000 conversations instead of 200,
+  because the cap hid exactly the oldest letters a cleanup is after.
+
+## 3.3.3 - 2026-10-23
+
+### Added
+
+- **Continuous integration.** `.github/workflows/ci.yml` runs `ruff check` and `pytest` on the backend
+  and the tests plus production builds of `frontend/` and `ui/` on every push to `main` and on every
+  pull request. Pull requests from forks run with the default read-only token.
+- **Same-origin guard on every write and on both WebSockets.** Binding to loopback keeps other machines
+  out, not other websites: any page open in the browser can POST to `http://localhost:<port>`, and a DNS
+  rebinding page can even make its own hostname resolve to it. `Host` and `Origin` must now both be ours
+  (`guard.py`); a missing `Origin` on a write is refused (fail closed), and a cross-site handshake on
+  `/ws/terminal` or `/ws/events` is closed with 1008 before `accept`. Reads that aggregate personal data
+  can opt into the `Host` allowlist with the `AllowedHost` dependency. `write_hosts` extends the allowlist
+  when a proxy serves the UI under another name.
+- **`/backlog` is a real route.** A link or bookmark to the backlog lands on the backlog board instead of
+  the not-found page; the view is the URL (`Queue.tsx`).
+- **`bin/check-internal-links`** follows every internal link of one page and reports the dead ones, so a
+  renamed route or document is caught before a release.
+
+### Fixed
+
+- **Canceling an A2A item from the Board closes its handoff.** `POST /api/queue/cancel/{id}` moved the
+  file to `done/` but never wrote the terminal audit event, so the handoff stayed `stale` in `/a2a`
+  forever. It now delegates to the ecosystem's `queue_lifecycle.dashboard_cancel` when present (claim
+  arbiter, `status: canceled`, UTC timestamps, one `canceled` event); without it, plain items are still
+  canceled locally and A2A items get 503 instead of an orphaned audit. A repeated click is idempotent.
+- **Overview failed-run alert agrees with the `fail_24h` KPI.** The alert query had `LIMIT 10` and the
+  message used the length of that list, so with 14 failures the KPI said 14 and the alert said 10, and
+  Ack only acknowledged the 10 rendered. The total and the Ack ids now cover every unacked failure in the
+  window; only the rendered list is capped, and the message says so. Exit-75 skipped runs stay out of
+  both, as the contract with `run-scheduled.sh` requires.
+
 ## 3.3.2 - 2026-10-14
 
 ### Changed

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
+
+import pytest
 
 
 def test_overview_shape(client):
@@ -85,7 +89,7 @@ def test_queue_cancel_moves_pending_to_done(client, ecosystem):
     assert r.json()["ok"] is True
     done = ecosystem.queue_dir / "done" / "item-pending.json"
     assert done.exists()
-    assert json.loads(done.read_text())["status"] == "cancelled"
+    assert json.loads(done.read_text())["status"] == "canceled"  # audit vocabulary, not "cancelled"
 
 
 def test_enqueue_creates_pending_item(client, ecosystem):
@@ -376,3 +380,105 @@ def test_spa_cache_policy(tmp_path, monkeypatch):
     assert c.get("/favicon.svg").headers["cache-control"] == "no-cache"  # replaced in place
     asset = c.get("/assets/index-abc123.js").headers["cache-control"]
     assert "immutable" in asset and "max-age=31536000" in asset
+
+
+# ── Failed-run alert: KPI, alert total and Ack ids must agree ───────────
+def _add_failures(ecosystem, n: int) -> list[int]:
+    import sqlite3
+
+    from .conftest import make_run
+    conn = sqlite3.connect(ecosystem.agents_dir.parent / "agents-state" / "runs.db")
+    for i in range(n):
+        make_run(conn, "beta-agent", "failed", hours_ago=1 + i * 0.1, exit_code=1)
+    conn.commit()
+    ids = [r[0] for r in conn.execute(
+        "SELECT id FROM runs WHERE status='failed' AND job_id='beta-agent' ORDER BY id DESC")]
+    conn.close()
+    return ids
+
+
+def _fail_alert(body):
+    return next((a for a in body["alerts"] if a["type"] == "fail"), None)
+
+
+def test_fail_alert_14_failures_shows_latest_10_and_acks_all(client, ecosystem):
+    """Regression: KPI said 14 while the alert said 10, because the alert query
+    had LIMIT 10 and the message used the length of the truncated list."""
+    ids = _add_failures(ecosystem, 14)
+    body = client.get("/api/overview").json()
+    assert body["metrics"]["fail_24h"] == 14
+    alert = _fail_alert(body)
+    assert alert["message"] == "14 failed run(s) in last 24h (showing latest 10)"
+    assert [f["id"] for f in alert["items"]] == ids[:10]
+    assert sorted(alert["ids"].split(","), key=int) == sorted(map(str, ids), key=int)
+
+    # Ack with exactly what the UI sends clears the hidden 4 too
+    client.post("/api/alerts/ack", json={"ids": alert["ids"].split(",")})
+    body = client.get("/api/overview").json()
+    assert _fail_alert(body) is None
+    assert body["metrics"]["fail_24h"] == 14  # raw KPI unchanged by ack
+
+
+def test_fail_alert_10_or_fewer_is_unchanged(client, ecosystem):
+    ids = _add_failures(ecosystem, 10)
+    alert = _fail_alert(client.get("/api/overview").json())
+    assert alert["message"] == "10 failed run(s) in last 24h"
+    assert [f["id"] for f in alert["items"]] == ids
+    assert alert["ids"] == ",".join(map(str, ids))
+
+
+def test_fail_alert_partially_acked_counts_only_unacked(client, ecosystem):
+    ids = _add_failures(ecosystem, 14)
+    # ack the 5 most recent: 9 unacked remain, including older ones that the
+    # old LIMIT-then-filter query would have hidden
+    client.post("/api/alerts/ack", json={"ids": [str(i) for i in ids[:5]]})
+    body = client.get("/api/overview").json()
+    assert body["metrics"]["fail_24h"] == 14
+    alert = _fail_alert(body)
+    assert alert["message"] == "9 failed run(s) in last 24h"
+    assert [f["id"] for f in alert["items"]] == ids[5:]
+    assert alert["ids"] == ",".join(map(str, ids[5:]))
+
+
+RUN_SCHEDULED = Path.home() / ".kiro" / "agents" / "scripts" / "run-scheduled.sh"
+
+
+def test_fail_alert_excludes_exit75_skipped_runs(client, ecosystem):
+    """Contract with run-scheduled.sh: exit 75 (EX_TEMPFAIL, transient deferral) is
+    recorded as status='skipped' and must stay out of the alert, its Ack ids and the
+    KPI. Kills the `status IN ('failed','skipped')` mutant that survived review."""
+    import sqlite3
+
+    from .conftest import make_run
+    ids = _add_failures(ecosystem, 3)
+    conn = sqlite3.connect(ecosystem.agents_dir.parent / "agents-state" / "runs.db")
+    for i in range(4):
+        make_run(conn, "beta-agent", "skipped", hours_ago=0.5 + i * 0.05, exit_code=75)
+    conn.commit()
+    skipped = {str(r[0]) for r in conn.execute("SELECT id FROM runs WHERE status='skipped'")}
+    conn.close()
+
+    body = client.get("/api/overview").json()
+    alert = _fail_alert(body)
+    assert alert["message"] == "3 failed run(s) in last 24h"
+    assert alert["ids"] == ",".join(map(str, ids))
+    assert not skipped & set(alert["ids"].split(","))
+    assert body["metrics"]["fail_24h"] == 3
+
+
+def test_run_scheduled_records_exit75_as_skipped():
+    """Producer side of the contract above, read from the real script when present."""
+    if not RUN_SCHEDULED.is_file():
+        pytest.skip("run-scheduled.sh not installed on this host")
+    src = RUN_SCHEDULED.read_text()
+    assert re.search(r'EXIT_CODE -eq 75 \]; then\s+STATUS="skipped"', src)
+    assert "'$STATUS'" in src.split("INSERT INTO runs", 1)[1]
+
+
+def test_fail_alert_acked_subset_still_truncates(client, ecosystem):
+    ids = _add_failures(ecosystem, 14)
+    client.post("/api/alerts/ack", json={"ids": [str(ids[0]), str(ids[1])]})
+    alert = _fail_alert(client.get("/api/overview").json())
+    assert alert["message"] == "12 failed run(s) in last 24h (showing latest 10)"
+    assert [f["id"] for f in alert["items"]] == ids[2:12]
+    assert alert["ids"] == ",".join(map(str, ids[2:]))

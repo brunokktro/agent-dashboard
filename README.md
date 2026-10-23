@@ -17,6 +17,7 @@ This dashboard is the observability half of that missing layer: not a wrapper ar
 - 🏠 **Local-first** - your data never leaves your machine. No cloud dependency, no account, no telemetry.
 - ⚡ **Real-time** - a WebSocket event channel updates every open page within ~1 second.
 - 🔍 **Failure diagnosis** - one click explains a failed run: exit-code meaning, the run's own log segment, and known-pattern detection (expired auth, missing deps, timeouts, rate limits...). Every run logged, every failure categorized.
+- 🚨 **Failed-run alert that matches the KPI** - the Overview alert counts every unacknowledged failure of the last 24h, so it agrees with the `fail_24h` KPI when nothing is acked. It lists the latest 10 and says so (`14 failed run(s) in last 24h (showing latest 10)`); **Ack** acknowledges all of them, including the ones not listed. The KPI stays raw and ignores acks.
 - 🖥️ **Multi-terminal console** - up to 6 simultaneous PTY sessions that **survive page refreshes**, with a broadcast bar to ask all agents the same thing.
 - 🔗 **Pipe mode** - multi-agent orchestration made visible: chain agents so the output of one becomes the prompt of the next, with an animated flow view, live streaming and visible hand-offs.
 - 📅 **A real scheduler view** - if your agents run on plain cron (launchd, crontab), the Supervisor gives them what cron never had: plain-English schedules, next-run countdowns, failure pinning, one-click runs, inline cron editing and enable/disable.

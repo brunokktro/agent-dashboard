@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from fastapi.responses import StreamingResponse
 
 from .config import Settings, get_settings
+from .guard import websocket_allowed
 
 router = APIRouter()
 
@@ -194,8 +195,12 @@ async def _safe_send(ws: WebSocket, data: bytes, session_id: str) -> None:
 
 
 @router.websocket("/ws/terminal")
-async def ws_terminal(ws: WebSocket, session: str = ""):
+async def ws_terminal(ws: WebSocket, settings: Annotated[Settings, Depends(get_settings)],
+                      session: str = ""):
     global _reaper
+    if not websocket_allowed(ws.headers, settings):
+        await ws.close(code=1008)  # before accept: the handshake gets a 403
+        return
     await ws.accept()
     if _reaper is None or _reaper.done():
         _reaper = asyncio.create_task(_reap_idle())

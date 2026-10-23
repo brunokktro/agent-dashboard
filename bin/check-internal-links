@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""check-internal-links - follow every internal link of a page and prove it renders.
+
+Why this exists: the server answers 200 for ANY path (SPA fallback), so a link
+to a route the app does not have looks healthy to curl and still lands on the
+"Nothing at this address" page. The only honest check is to RENDER each target
+and read the title the page set for itself.
+
+How: headless Chrome (``--dump-dom`` after JS runs) loads the start page,
+collects every ``<a href="/...">``, then loads each target and asserts its
+``<title>`` is not the not-found title and, when given, matches the expected
+title for that route.
+
+Usage:
+  bin/check-internal-links http://127.0.0.1:7780 /overview
+  bin/check-internal-links BASE PAGE --expect /backlog="Backlog - Board"
+
+Exit 0 when every internal link renders a real page, 1 otherwise.
+"""
+from __future__ import annotations
+
+import argparse
+import html
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+NOT_FOUND = "Not found - Agent Dashboard"
+CHROME_CANDIDATES = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "google-chrome", "chromium", "chromium-browser",
+)
+
+
+def chrome() -> str:
+    for c in CHROME_CANDIDATES:
+        if (c.startswith("/") and os.path.exists(c)) or shutil.which(c):
+            return c
+    sys.exit("check-internal-links: no Chrome/Chromium found")
+
+
+def dump(url: str, budget_ms: int) -> str:
+    out = subprocess.run(
+        [chrome(), "--headless", "--disable-gpu", "--no-sandbox", "--hide-scrollbars",
+         f"--virtual-time-budget={budget_ms}", "--dump-dom", url],
+        capture_output=True, text=True, timeout=90)
+    return out.stdout
+
+
+def title_of(dom: str) -> str:
+    m = re.search(r"<title>(.*?)</title>", dom, re.S)
+    return html.unescape(m.group(1)).strip() if m else ""
+
+
+def internal_hrefs(dom: str) -> list[str]:
+    hrefs = {html.unescape(h) for h in re.findall(r'<a\b[^>]*\bhref="([^"]+)"', dom)}
+    # internal = same-origin absolute path; anchors and protocol-relative are not routes
+    return sorted(h.split("#")[0] for h in hrefs
+                  if h.startswith("/") and not h.startswith("//") and h.split("#")[0])
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    ap.add_argument("base", help="server origin, e.g. http://127.0.0.1:7780")
+    ap.add_argument("page", help="page whose links to follow, e.g. /overview")
+    ap.add_argument("--expect", action="append", default=[],
+                    help='route="Exact title" (repeatable)')
+    ap.add_argument("--budget", type=int, default=8000, help="virtual time budget ms")
+    a = ap.parse_args()
+    expect = dict(e.split("=", 1) for e in a.expect)
+
+    start = dump(a.base.rstrip("/") + a.page, a.budget)
+    links = internal_hrefs(start)
+    if not links:
+        print(f"FAIL {a.page}: no internal links found (did the page render? "
+              f"title={title_of(start)!r})")
+        return 1
+    bad = 0
+    for href in sorted(set(links)):
+        t = title_of(dump(a.base.rstrip("/") + href, a.budget))
+        want = expect.get(href.split("?")[0])
+        ok = t and t != NOT_FOUND and (want is None or t == want)
+        bad += not ok
+        print(f"{'OK  ' if ok else 'FAIL'} {href:<32} title={t!r}"
+              + (f" expected={want!r}" if want and not ok else ""))
+    print(f"{len(set(links)) - bad}/{len(set(links))} internal links render a real page")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

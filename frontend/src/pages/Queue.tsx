@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { useLocation, useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   AlertTriangle, CheckCircle2, CircleDashed, Loader2, Plus, RefreshCw, RotateCcw, Search, X, XCircle,
@@ -76,7 +77,11 @@ export default function QueuePage() {
     return map
   }, [data, search])
 
-  const [view, setView] = useState<"work" | "backlog">("work")
+  // The view IS the URL: /backlog opens the backlog tab directly, so a link or
+  // bookmark to it lands on the right board instead of the not-found page.
+  const navigate = useNavigate()
+  const view: "work" | "backlog" = useLocation().pathname.startsWith("/backlog") ? "backlog" : "work"
+  const setView = (v: "work" | "backlog") => navigate(v === "backlog" ? "/backlog" : "/queue")
   usePageTitle(view === "backlog" ? "Backlog" : "Work items", "Board")
 
   if (!data) return null

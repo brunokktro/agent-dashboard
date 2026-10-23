@@ -32,6 +32,15 @@ third parser. Important semantics:
 Module cache includes reader mtime, so canonical changes are picked up without backend restart. A
 test pins callable names to fail loudly on upstream rename.
 
+## Queue cancel (writer delegation)
+
+`POST /api/queue/cancel/{id}` is the one write path this page's data depends on. It delegates to
+`scripts/queue_lifecycle.py` (`dashboard_cancel`), loaded with the same mtime-keyed cache. That
+module owns the claim arbiter and the single terminal-event writer, so a canceled A2A item settles
+queue and audit together: `done/` with `status: canceled` plus one `canceled` event in
+`handoffs.jsonl`. Without the module, A2A items are refused with 503 instead of being canceled
+without their event.
+
 ## Page
 
 - A2A vs total queue counters per status;

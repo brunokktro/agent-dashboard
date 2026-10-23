@@ -129,6 +129,21 @@ def canonical(settings: Settings, role: str) -> Any | None:
         return None
 
 
+# The queue's own lifecycle module (claim arbiter + terminal audit writer). A WRITER, so it is kept
+# out of CANONICAL_SCRIPTS: the observer page must not report it as a missing reader.
+LIFECYCLE_SCRIPT = "queue_lifecycle.py"
+
+
+def lifecycle(settings: Settings) -> Any | None:
+    """``queue_lifecycle`` when installed with ``dashboard_cancel``, else None (mtime-cached)."""
+    path = settings.scripts_dir / LIFECYCLE_SCRIPT
+    try:
+        module = _load_script(str(path), path.stat().st_mtime)
+    except (OSError, ImportError, SyntaxError):
+        return None
+    return module if callable(getattr(module, "dashboard_cancel", None)) else None
+
+
 def _missing(settings: Settings) -> list[str]:
     return [
         str(settings.scripts_dir / filename)

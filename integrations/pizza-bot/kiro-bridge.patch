@@ -1082,6 +1082,60 @@ index 0000000..9f69d2c
 +    return undefined;
 +  }
 +}
+diff --git a/apps/api-server/src/routes-threads.test.ts b/apps/api-server/src/routes-threads.test.ts
+index 7c4fa41..4a55109 100644
+--- a/apps/api-server/src/routes-threads.test.ts
++++ b/apps/api-server/src/routes-threads.test.ts
+@@ -299,6 +299,20 @@ describe("threadRoutes: fork", () => {
+ });
+ 
+ describe("threadRoutes: list + search", () => {
++  it("honors a clamped ?limit on the thread list", async () => {
++    const { host } = fakeHost([]);
++    for (const id of ["t1", "t2", "t3"]) host.threadStore.create({ threadId: id, title: id });
++    const ids = async (query: string) =>
++      ((await (await threadRoutes(host).request(`/threads/list${query}`)).json()) as Array<{
++        threadId: string;
++      }>).length;
++    expect(await ids("")).toBe(3);
++    expect(await ids("?limit=2")).toBe(2);
++    expect(await ids("?limit=-5")).toBe(1);
++    expect(await ids("?limit=abc")).toBe(3);
++    expect(await ids("?limit=999999")).toBe(3);
++  });
++
+   it("lists threads and searches indexed messages", async () => {
+     const { host } = fakeHost([]);
+     host.threadStore.create({ threadId: "t1", title: "First" });
+diff --git a/apps/api-server/src/routes-threads.ts b/apps/api-server/src/routes-threads.ts
+index 42b2a39..1ea44aa 100644
+--- a/apps/api-server/src/routes-threads.ts
++++ b/apps/api-server/src/routes-threads.ts
+@@ -7,6 +7,9 @@ const newThreadId = () => `thread_${Date.now().toString(36)}_${forkCounter++}`;
+ 
+ const SEARCH_LIMIT_DEFAULT = 50;
+ const SEARCH_LIMIT_MAX = 200;
++const LIST_LIMIT_DEFAULT = 200;
++// Bulk selection by age only sees what the sidebar loaded, so the inbox can ask for its full history.
++const LIST_LIMIT_MAX = 2000;
+ 
+ // Checkpoint state may contain live LangChain messages or their serialized form.
+ export interface ForkMessage {
+@@ -108,7 +111,13 @@ export function forkBoundaryError(history: ForkMessage[], messageId: string): st
+ export function threadRoutes(host: AgentHost): Hono {
+   const app = new Hono();
+ 
+-  app.get("/threads/list", (c) => c.json(host.threadStore.list()));
++  app.get("/threads/list", (c) => {
++    const requested = Number(c.req.query("limit") ?? LIST_LIMIT_DEFAULT);
++    const limit = Number.isFinite(requested)
++      ? Math.min(Math.max(Math.trunc(requested), 1), LIST_LIMIT_MAX)
++      : LIST_LIMIT_DEFAULT;
++    return c.json(host.threadStore.list(limit));
++  });
+ 
+   app.get("/threads/activity/events", (c) => {
+     const signal = c.req.raw.signal;
 diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
 index 6abb95d..2c16d87 100644
 --- a/apps/web/src/App.tsx
@@ -1244,10 +1298,10 @@ index 6abb95d..2c16d87 100644
                              agent={agent}
                              onRename={(title) => onRename(activeThreadId, title)}
 diff --git a/apps/web/src/api-client.ts b/apps/web/src/api-client.ts
-index 3d3563b..f6b70fa 100644
+index 3d3563b..951454d 100644
 --- a/apps/web/src/api-client.ts
 +++ b/apps/web/src/api-client.ts
-@@ -146,6 +146,24 @@ export class ApiClient {
+@@ -146,8 +146,26 @@ export class ApiClient {
      return { checkpointId: body.checkpoint_id, threadId: body.thread_id };
    }
  
@@ -1270,8 +1324,11 @@ index 3d3563b..f6b70fa 100644
 +  }
 +
    async listThreads(): Promise<ThreadInfo[]> {
-     return this.json("list threads", "/threads/list");
+-    return this.json("list threads", "/threads/list");
++    return this.json("list threads", "/threads/list?limit=2000");
    }
+ 
+   async createThread(threadId: string, folderId?: string): Promise<void> {
 @@ -705,6 +723,28 @@ function logQuerySuffix(query: LogQueryParams, includePaging: boolean): string {
    return params.size > 0 ? `?${params}` : "";
  }
@@ -1533,10 +1590,10 @@ index 74a29fb..cdc8d26 100644
            </div>
  
 diff --git a/apps/web/src/components/Sidebar.tsx b/apps/web/src/components/Sidebar.tsx
-index 78de924..8e36ca7 100644
+index 78de924..c2f0c6b 100644
 --- a/apps/web/src/components/Sidebar.tsx
 +++ b/apps/web/src/components/Sidebar.tsx
-@@ -17,8 +17,11 @@ import {
+@@ -17,11 +17,15 @@ import {
    Pencil,
    Check,
    SlidersHorizontal,
@@ -1547,9 +1604,14 @@ index 78de924..8e36ca7 100644
 +import type { ApiClient, FolderInfo, KiroPendingHandoff, ThreadInfo, SearchHit } from "@/api-client";
 +import { awaitingByThread, awaitingLabel } from "../projection/awaiting.js";
  import { useKnownThreadIds, useRunningThreadIds } from "../use-thread-slice.js";
- import { datePeriod, PERIOD_ORDER, relativeTime, type DatePeriod } from "../lib/conversation.js";
+-import { datePeriod, PERIOD_ORDER, relativeTime, type DatePeriod } from "../lib/conversation.js";
++import { PERIOD_ORDER, relativeTime } from "../lib/conversation.js";
  import { selectionAfterDelete } from "../lib/list-nav.js";
-@@ -67,7 +70,10 @@ export interface SidebarProps {
++import { quickSelectIds, rowPeriod, type AgeWindow, type ReadState } from "../lib/quick-select.js";
+ import {
+   useHotkey,
+   useLayer,
+@@ -67,7 +71,10 @@ export interface SidebarProps {
    onFocusComposer?: () => void;
  }
  
@@ -1561,7 +1623,7 @@ index 78de924..8e36ca7 100644
  
  type FolderEditor =
    | { mode: "create" }
-@@ -92,6 +98,7 @@ export function Sidebar({
+@@ -92,6 +99,7 @@ export function Sidebar({
    const localRunning = useRunningThreadIds();
    const [threads, setThreads] = useState<ThreadInfo[]>([]);
    const [folders, setFolders] = useState<FolderInfo[]>([]);
@@ -1569,17 +1631,19 @@ index 78de924..8e36ca7 100644
    const [query, setQuery] = useState("");
    const [hits, setHits] = useState<SearchHit[]>([]);
    const [searching, setSearching] = useState(false);
-@@ -105,6 +112,9 @@ export function Sidebar({
+@@ -105,6 +113,11 @@ export function Sidebar({
    const [confirmFolderDelete, setConfirmFolderDelete] = useState<FolderInfo | null>(null);
    const [folderBusy, setFolderBusy] = useState(false);
    const [folderError, setFolderError] = useState<string | null>(null);
 +  const [selectMode, setSelectMode] = useState(false);
 +  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
 +  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
++  const [quickAge, setQuickAge] = useState<AgeWindow | "">("");
++  const [quickRead, setQuickRead] = useState<ReadState>("any");
    const [swipedThreadId, setSwipedThreadId] = useState<string | null>(null);
    const threadListRef = useRef<HTMLDivElement | null>(null);
    const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
-@@ -130,11 +140,14 @@ export function Sidebar({
+@@ -130,11 +143,14 @@ export function Sidebar({
    );
  
    const refresh = useCallback(async () => {
@@ -1595,7 +1659,7 @@ index 78de924..8e36ca7 100644
      return threadList;
    }, [client, refreshThreads]);
  
-@@ -326,6 +339,31 @@ export function Sidebar({
+@@ -326,6 +342,31 @@ export function Sidebar({
      return [...known.values()];
    }, [threads, openedThreads, localKnown, activeThreadId, threadTitles]);
  
@@ -1627,7 +1691,7 @@ index 78de924..8e36ca7 100644
    const isUnread = useCallback(
      (t: ThreadInfo) => t.unread && t.threadId !== activeThreadId,
      [activeThreadId],
-@@ -335,17 +373,25 @@ export function Sidebar({
+@@ -335,17 +376,25 @@ export function Sidebar({
      ? filter.slice("folder:".length)
      : undefined;
  
@@ -1646,7 +1710,6 @@ index 78de924..8e36ca7 100644
 -          : selectedFolderId
 -            ? rows.filter((t) => t.folderId === selectedFolderId)
 -        : rows;
--
 +      : filter === "awaiting"
 +        ? rows.filter((t) => awaiting.has(t.threadId))
 +        : filter === "action"
@@ -1656,19 +1719,68 @@ index 78de924..8e36ca7 100644
 +            : selectedFolderId
 +              ? rows.filter((t) => t.folderId === selectedFolderId)
 +        : rows.filter((t) => !sentFolderId || t.folderId !== sentFolderId);
-+
+ 
 +  const awaitingCount = awaiting.size;
    const unreadCount = useMemo(() => rows.filter(isUnread).length, [rows, isUnread]);
    const actionCount = useMemo(
      () => rows.filter((t) => t.awaitingAction).length,
-@@ -447,6 +493,48 @@ export function Sidebar({
+@@ -374,9 +423,7 @@ export function Sidebar({
+     const rest = visibleRows.filter((t) => !t.pinned);
+     const byPeriod = new Map<string, ThreadInfo[]>();
+     for (const t of rest) {
+-      const period: DatePeriod = t.lastActivityAt
+-        ? datePeriod(t.lastActivityAt)
+-        : "Today";
++      const period = rowPeriod(t);
+       const arr = byPeriod.get(period) ?? [];
+       arr.push(t);
+       byPeriod.set(period, arr);
+@@ -447,6 +494,86 @@ export function Sidebar({
      ),
    );
  
 +  const exitSelectMode = useCallback(() => {
 +    setSelectMode(false);
 +    setSelectedIds(new Set());
++    setQuickAge("");
++    setQuickRead("any");
 +  }, []);
++
++  const applyQuickSelect = useCallback(
++    (age: AgeWindow, read: ReadState) => {
++      setQuickAge(age);
++      setQuickRead(read);
++      const picked = new Set(
++        quickSelectIds(visibleRows, { age, read }, {
++          isUnread,
++          isProtected: (t) => awaiting.has(t.threadId) || localRunning.includes(t.threadId),
++        }),
++      );
++      setSelectedIds(picked);
++      // Open every group the preset picked from, so nothing about to be deleted sits folded away.
++      const pickedPeriods = new Set<string>();
++      for (const g of groups) if (g.rows.some((t) => picked.has(t.threadId))) pickedPeriods.add(g.period);
++      setCollapsed((prev) => {
++        if (![...pickedPeriods].some((period) => prev.has(period))) return prev;
++        const next = new Set(prev);
++        for (const period of pickedPeriods) next.delete(period);
++        return next;
++      });
++    },
++    [visibleRows, groups, isUnread, awaiting, localRunning],
++  );
++
++  // Delete acts on the ids, not on what is on screen: drop picks the current filter no longer shows,
++  // so switching segment or folder can never delete conversations the user cannot see.
++  const visibleIdKey = visibleRows.map((t) => t.threadId).join("\n");
++  useEffect(() => {
++    if (!selectMode) return;
++    const visible = new Set(visibleIdKey ? visibleIdKey.split("\n") : []);
++    setSelectedIds((prev) => {
++      const kept = [...prev].filter((id) => visible.has(id));
++      return kept.length === prev.size ? prev : new Set(kept);
++    });
++  }, [selectMode, visibleIdKey]);
 +
 +  const toggleSelected = useCallback((threadId: string) => {
 +    setSelectedIds((prev) => {
@@ -1710,7 +1822,7 @@ index 78de924..8e36ca7 100644
    const onDeleteConfirm = useCallback(async () => {
      const t = confirmDelete;
      if (!t) return;
-@@ -535,6 +623,14 @@ export function Sidebar({
+@@ -535,6 +662,14 @@ export function Sidebar({
              Unread
              {unreadCount > 0 && <span className="segmented-count">{unreadCount}</span>}
            </button>
@@ -1725,7 +1837,7 @@ index 78de924..8e36ca7 100644
            <button
              className={`segmented-btn${filter === "action" ? " active" : ""}`}
              onClick={() => setFilter("action")}
-@@ -543,6 +639,15 @@ export function Sidebar({
+@@ -543,6 +678,15 @@ export function Sidebar({
              {actionCount > 0 && <span className="segmented-count">{actionCount}</span>}
            </button>
          </div>
@@ -1741,7 +1853,7 @@ index 78de924..8e36ca7 100644
          <button
            className={`sidebar-filter-more${foldersVisible ? " active" : ""}`}
            title={foldersVisible ? "Hide folder filters" : "Show folder filters"}
-@@ -554,6 +659,24 @@ export function Sidebar({
+@@ -554,6 +698,58 @@ export function Sidebar({
          </button>
        </div>
  
@@ -1761,12 +1873,46 @@ index 78de924..8e36ca7 100644
 +          <button className="sidebar-bulkbar-cancel" onClick={exitSelectMode}>
 +            Cancel
 +          </button>
++          <div className="sidebar-bulkbar-picks">
++            <select
++              className="sidebar-bulkbar-pick"
++              aria-label="Select by date"
++              title={
++                searchActive
++                  ? "Clear the search to select by date or read state"
++                  : "Pinned and waiting conversations are skipped; tick them by hand"
++              }
++              disabled={searchActive}
++              value={quickAge}
++              onChange={(e) => applyQuickSelect(e.target.value as AgeWindow, quickRead)}
++            >
++              <option value="" disabled>
++                Select...
++              </option>
++              <option value="any">All dates</option>
++              <option value="today">Today</option>
++              <option value="week">This week</option>
++              <option value="month">This month</option>
++              <option value="older">Before this month</option>
++            </select>
++            <select
++              className="sidebar-bulkbar-pick"
++              aria-label="Select by read state"
++              disabled={searchActive}
++              value={quickRead}
++              onChange={(e) => applyQuickSelect(quickAge || "any", e.target.value as ReadState)}
++            >
++              <option value="any">Read + unread</option>
++              <option value="read">Read</option>
++              <option value="unread">Unread</option>
++            </select>
++          </div>
 +        </div>
 +      )}
        {foldersVisible && (
          <div className="sidebar-folders">
            <div className="sidebar-folders-head">
-@@ -696,6 +819,7 @@ export function Sidebar({
+@@ -696,6 +892,7 @@ export function Sidebar({
                          const running = localRunning.includes(t.threadId);
                          const unread = isUnread(t);
                          const needsAction = t.awaitingAction;
@@ -1774,7 +1920,7 @@ index 78de924..8e36ca7 100644
                          return (
                            <li
                              key={t.threadId}
-@@ -703,7 +827,9 @@ export function Sidebar({
+@@ -703,7 +900,9 @@ export function Sidebar({
                              ref={(element) => listNavigation.setRowElement(t.threadId, element)}
                              role="option"
                              aria-selected={t.threadId === activeThreadId}
@@ -1785,7 +1931,7 @@ index 78de924..8e36ca7 100644
                            >
                              <SwipeToDelete
                                open={swipedThreadId === t.threadId}
-@@ -715,8 +841,18 @@ export function Sidebar({
+@@ -715,8 +914,18 @@ export function Sidebar({
                              >
                                {/* A div permits sibling pin/delete buttons without invalid button nesting. */}
                                <div
@@ -1805,7 +1951,7 @@ index 78de924..8e36ca7 100644
                                  <span className="thread-main">
                                    <span className="thread-line1">
                                      {running && <Pen size={13} className="thread-running-icon" />}
-@@ -728,6 +864,12 @@ export function Sidebar({
+@@ -728,6 +937,12 @@ export function Sidebar({
                                        {running ? "now" : relativeTime(t.lastActivityAt)}
                                      </span>
                                    </span>
@@ -1818,7 +1964,7 @@ index 78de924..8e36ca7 100644
                                    {t.lastMessage && (
                                      <span className="thread-preview">{t.lastMessage}</span>
                                    )}
-@@ -817,6 +959,16 @@ export function Sidebar({
+@@ -817,6 +1032,16 @@ export function Sidebar({
          )}
        </div>
  
@@ -2084,6 +2230,163 @@ index 0000000..e335442
 +    observer.disconnect();
 +    window.removeEventListener("message", onMessage);
 +  };
++}
+diff --git a/apps/web/src/lib/quick-select.test.ts b/apps/web/src/lib/quick-select.test.ts
+new file mode 100644
+index 0000000..edc762b
+--- /dev/null
++++ b/apps/web/src/lib/quick-select.test.ts
+@@ -0,0 +1,93 @@
++import { describe, it, expect } from "vitest";
++import { quickSelectIds, rowPeriod, type QuickSelectRow } from "./quick-select.js";
++
++// Thursday 2026-10-22 15:00 local; the calendar week started Sunday 2026-10-18.
++const now = new Date(2026, 9, 22, 15, 0, 0);
++const at = (y: number, m: number, d: number, h = 12) => new Date(y, m, d, h).toISOString();
++
++type Row = QuickSelectRow & { unread: boolean; waiting?: boolean };
++const row = (threadId: string, lastActivityAt: string, extra: Partial<Row> = {}): Row => ({
++  threadId,
++  pinned: false,
++  createdAt: lastActivityAt,
++  lastActivityAt,
++  unread: false,
++  ...extra,
++});
++
++const rows: Row[] = [
++  row("today-read", at(2026, 9, 22, 9)),
++  row("today-unread", at(2026, 9, 22, 10), { unread: true }),
++  row("yesterday", at(2026, 9, 21)),
++  row("sunday", at(2026, 9, 18, 0)),
++  row("last-saturday", at(2026, 9, 17, 23)),
++  row("oct-2", at(2026, 9, 2)),
++  row("sep-30", at(2026, 8, 30), { unread: true }),
++  row("pinned-old", at(2026, 0, 1), { pinned: true }),
++  row("waiting-old", at(2026, 0, 2), { waiting: true }),
++];
++const options = { isUnread: (r: Row) => r.unread, isProtected: (r: Row) => !!r.waiting, now };
++const pick = (age: Parameters<typeof quickSelectIds>[1]["age"], read: "any" | "read" | "unread" = "any") =>
++  quickSelectIds(rows, { age, read }, options);
++
++describe("quickSelectIds (sidebar bulk-selection presets)", () => {
++  it("any/any picks every visible row except pinned and protected ones", () => {
++    expect(pick("any")).toEqual([
++      "today-read",
++      "today-unread",
++      "yesterday",
++      "sunday",
++      "last-saturday",
++      "oct-2",
++      "sep-30",
++    ]);
++  });
++
++  it("filters by read state", () => {
++    expect(pick("any", "read")).toEqual(["today-read", "yesterday", "sunday", "last-saturday", "oct-2"]);
++    expect(pick("any", "unread")).toEqual(["today-unread", "sep-30"]);
++  });
++
++  it("today starts at local midnight", () => {
++    expect(pick("today")).toEqual(["today-read", "today-unread"]);
++  });
++
++  it("this week is Today + Yesterday + This Week groups: Sunday in, the Saturday before out", () => {
++    expect(pick("week")).toEqual(["today-read", "today-unread", "yesterday", "sunday"]);
++  });
++
++  it("this month is every group but Older, and older is its exact complement", () => {
++    expect(pick("month")).toEqual([
++      "today-read",
++      "today-unread",
++      "yesterday",
++      "sunday",
++      "last-saturday",
++      "oct-2",
++    ]);
++    expect(pick("older")).toEqual(["sep-30"]);
++    expect([...pick("month"), ...pick("older")].sort()).toEqual(pick("any").sort());
++  });
++
++  it("combines age and read state", () => {
++    expect(pick("older", "unread")).toEqual(["sep-30"]);
++    expect(pick("older", "read")).toEqual([]);
++    expect(pick("week", "unread")).toEqual(["today-unread"]);
++  });
++
++  it("each window counts exactly the rows of the sidebar groups it names", () => {
++    const inGroups = (...periods: string[]) =>
++      rows
++        .filter((r) => !r.pinned && !r.waiting && periods.includes(rowPeriod(r, now)))
++        .map((r) => r.threadId);
++    expect(pick("week")).toEqual(inGroups("Today", "Yesterday", "This Week"));
++    expect(pick("older")).toEqual(inGroups("Older"));
++  });
++
++  it("a row with no activity yet sits under Today, like the sidebar groups it", () => {
++    const bare = [row("draft", "", { createdAt: "" })];
++    expect(rowPeriod(bare[0]!, now)).toBe("Today");
++    expect(quickSelectIds(bare, { age: "today", read: "any" }, options)).toEqual(["draft"]);
++    expect(quickSelectIds(bare, { age: "older", read: "any" }, options)).toEqual([]);
++  });
++});
+diff --git a/apps/web/src/lib/quick-select.ts b/apps/web/src/lib/quick-select.ts
+new file mode 100644
+index 0000000..2996030
+--- /dev/null
++++ b/apps/web/src/lib/quick-select.ts
+@@ -0,0 +1,52 @@
++/** Bulk-selection presets for the sidebar: pick conversations by age and read state in one go. */
++import { datePeriod, type DatePeriod } from "./conversation.js";
++
++export type AgeWindow = "any" | "today" | "week" | "month" | "older";
++export type ReadState = "any" | "read" | "unread";
++
++export interface QuickSelectCriteria {
++  age: AgeWindow;
++  read: ReadState;
++}
++
++export interface QuickSelectRow {
++  threadId: string;
++  pinned: boolean;
++  createdAt: string;
++  lastActivityAt: string;
++}
++
++// Each window is a union of the sidebar's date groups, so a preset's count always adds up to the
++// group headers the user is looking at.
++const WINDOW_PERIODS: Record<Exclude<AgeWindow, "any">, readonly DatePeriod[]> = {
++  today: ["Today"],
++  week: ["Today", "Yesterday", "This Week"],
++  month: ["Today", "Yesterday", "This Week", "Last Week", "This Month"],
++  older: ["Older"],
++};
++
++/** The sidebar date group a row sits under; a row with no activity yet is grouped under Today. */
++export function rowPeriod(row: Pick<QuickSelectRow, "lastActivityAt">, now = new Date()): DatePeriod {
++  return row.lastActivityAt ? datePeriod(row.lastActivityAt, now) : "Today";
++}
++
++/**
++ * Pinned rows and rows the caller marks protected (a handoff still waiting on its reply, a run in
++ * flight) are never picked by a preset; the user can still tick them by hand.
++ */
++export function quickSelectIds<T extends QuickSelectRow>(
++  rows: readonly T[],
++  criteria: QuickSelectCriteria,
++  options: { isUnread: (row: T) => boolean; isProtected?: (row: T) => boolean; now?: Date },
++): string[] {
++  const now = options.now ?? new Date();
++  return rows
++    .filter((row) => {
++      if (row.pinned || options.isProtected?.(row)) return false;
++      if (criteria.read !== "any" && options.isUnread(row) !== (criteria.read === "unread")) {
++        return false;
++      }
++      return criteria.age === "any" || WINDOW_PERIODS[criteria.age].includes(rowPeriod(row, now));
++    })
++    .map((row) => row.threadId);
 +}
 diff --git a/apps/web/src/lib/sidebar-width.test.ts b/apps/web/src/lib/sidebar-width.test.ts
 new file mode 100644
@@ -2931,7 +3234,7 @@ index 12e98fa..24df0ee 100644
      threadId: string,
      text: string,
 diff --git a/apps/web/src/styles.css b/apps/web/src/styles.css
-index bbe8fda..b2e426d 100644
+index bbe8fda..05e46e7 100644
 --- a/apps/web/src/styles.css
 +++ b/apps/web/src/styles.css
 @@ -46,10 +46,39 @@ body {
@@ -2975,7 +3278,7 @@ index bbe8fda..b2e426d 100644
  .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); }
  
  .new-chat {
-@@ -341,6 +370,36 @@ button.sidebar-folder-row:hover,
+@@ -341,6 +370,44 @@ button.sidebar-folder-row:hover,
  .thread-time { flex: 0 0 auto; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
  .thread-preview { font-size: 13px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
  .thread-badge { color: var(--dim); font-size: 12px; flex: 0 0 auto; }
@@ -2991,10 +3294,18 @@ index bbe8fda..b2e426d 100644
 +.thread-select-box { flex: 0 0 auto; align-self: center; margin: 0 2px 0 0; accent-color: var(--brand); }
 +.thread-row.selected-for-delete { background: color-mix(in srgb, var(--brand) 12%, transparent); }
 +.sidebar-bulkbar {
-+  display: flex; align-items: center; gap: 8px;
++  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
 +  padding: 6px 12px; border-bottom: 1px solid var(--border);
 +  font-size: 12px; color: var(--dim);
 +}
++.sidebar-bulkbar-count { white-space: nowrap; }
++.sidebar-bulkbar-picks { flex-basis: 100%; min-width: 0; display: flex; gap: 8px; }
++.sidebar-bulkbar-pick {
++  flex: 1 1 0; min-width: 0;
++  padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border);
++  background: transparent; color: var(--text); font-size: 12px;
++}
++.sidebar-bulkbar-pick:disabled { opacity: .45; }
 +.sidebar-bulkbar-count { flex: 1; }
 +.sidebar-bulkbar-delete {
 +  display: inline-flex; align-items: center; gap: 4px;
@@ -3012,7 +3323,7 @@ index bbe8fda..b2e426d 100644
  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
  
  .hit {
-@@ -794,6 +853,17 @@ button.sidebar-folder-row:hover,
+@@ -794,6 +861,17 @@ button.sidebar-folder-row:hover,
  
  .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
  .composer-tools { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -3030,7 +3341,7 @@ index bbe8fda..b2e426d 100644
  .composer-attach {
    display: inline-flex; align-items: center; justify-content: center;
    height: 32px; width: 32px; border: 0; border-radius: 8px; cursor: pointer;
-@@ -1915,6 +1985,10 @@ textarea.field-input { resize: vertical; line-height: 1.5; }
+@@ -1915,6 +1993,10 @@ textarea.field-input { resize: vertical; line-height: 1.5; }
    .inbox-module.mobile-chat .sidebar { display: none; }
  
    .has-sidebar .sidebar { width: 100%; flex: 1 1 auto; border-right: 0; }

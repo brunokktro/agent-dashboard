@@ -31,6 +31,18 @@ returns it to the inbox as unread, threaded like a mail conversation; replying r
 instead, the `Waiting` filter counts what is still out, and the sidebar has a selection mode for
 bulk delete. Messages addressed to the Pizza Bot itself remain a streaming chat.
 
+## Bulk selection
+
+Ticking one by one does not scale to an inbox of agent letters, so selection mode has two pickers:
+by date (`Today`, `This week`, `This month`, `Before this month`, `All dates`) and by read state
+(`Read`, `Unread`), combined and applied to the current filter or folder. Each date window is a union
+of the list's own groups, so a preset's count adds up to the group headers on screen; groups that hold
+picks are expanded so nothing about to be deleted sits folded away. Pinned conversations, letters
+still waiting on a reply and runs in flight are never picked by a preset. Switching filter drops picks
+the new view does not show, so a delete never reaches conversations you cannot see. The list asks the
+sidecar for up to 2000 conversations instead of the default 200, otherwise the oldest letters, which
+are exactly what a cleanup is after, would never load.
+
 ## Pane width
 
 The conversation list is resizable, because 320px truncates almost every agent subject. The handle
