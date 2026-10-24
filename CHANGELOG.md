@@ -5,6 +5,34 @@ User-facing changes per release. The commits behind each one are recorded in
 
 ## Unreleased
 
+## 3.3.4 - 2026-10-24
+
+### Changed
+
+- **Compact top navigation.** Tab labels never wrap (`whitespace-nowrap`, `px-2`, no gap between tabs) and the header uses the full window width instead of `max-w-7xl`; the nav scrolls inside itself instead of pushing the page sideways. Measured on the served app at 1512 px: the nav ends at 1290 px (it overflowed to 1521 px with "Run on AWS" wrapped onto three lines), no horizontal page scroll at 1512, 1440 or 1280 px.
+
+### Fixed
+
+- **The backend starts on native Windows** (PR #7 by @frankehle). `fcntl`, `pty` and `termios` are
+  imported behind a capability flag: on a platform without a pty the terminal WebSocket says so and
+  closes with 1011, and pipe chains run over plain stdio. Regression tests simulate the platform on
+  every OS: the app imports and `/healthz` answers with the three modules absent, the terminal closes
+  1011 with the message, and a two-step chain runs a fixture `kiro-cli` over stdio
+  (`backend/tests/test_no_pty_platform.py`). The Windows runner and CI contract stay open in #9.
+- **Closing a Console session no longer leaves `<defunct>` children** (refs #9). Closing or reaping a
+  session sends HUP and TERM to the PTY process group, waits without blocking the event loop, and
+  sends SIGKILL after a 2 s grace if needed. Before, a closed session left a zombie under the
+  backend (2 measured on a live KiroCrew instance). Tests cover explicit close, idle reap and a
+  shell that ignores HUP and TERM.
+- **`onEnable` repairs either missing bundle** (fixes #5). `node bin/ensure-bundles.mjs` builds
+  `frontend/` and `ui/` independently when the entry declared in `app.json` is missing and does
+  nothing on a release install. Contract test `backend/tests/test_on_enable_hook.py` runs the hook
+  string from `app.json` for both missing bundles, the release no-op and `node_modules` reuse.
+  Verified with real npm on a source install (both bundles built in 17 s, second enable a no-op)
+  and against an installed release tree (nothing to build).
+
+## 3.3.3 - 2026-10-23
+
 ### Added
 
 - **Pizza inbox selects in bulk by date and read state.** Selection mode used to mean ticking every
@@ -14,10 +42,6 @@ User-facing changes per release. The commits behind each one are recorded in
   count matches the headers; groups holding picks expand, and pinned, still-waiting and running
   conversations are never picked. The inbox also loads up to 2000 conversations instead of 200,
   because the cap hid exactly the oldest letters a cleanup is after.
-
-## 3.3.3 - 2026-10-23
-
-### Added
 
 - **Continuous integration.** `.github/workflows/ci.yml` runs `ruff check` and `pytest` on the backend
   and the tests plus production builds of `frontend/` and `ui/` on every push to `main` and on every

@@ -189,19 +189,19 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-7xl items-center gap-6 px-4">
+        <div className="flex h-14 items-center gap-3 px-4">
           <div className="flex shrink-0 items-center gap-2 whitespace-nowrap font-semibold">
             <Bot className="size-5" />
             <span>Agent Dashboard</span>
           </div>
-          <nav className="flex items-center gap-1">
+          <nav className="flex min-w-0 items-center overflow-x-auto">
             {tabs.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}
                 end={to === "/"}
                 className={({ isActive }) =>
-                  `flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                  `flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-sm transition-colors ${
                     isActive
                       ? "bg-secondary font-medium text-foreground"
                       : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
@@ -213,7 +213,7 @@ function Shell({ children }: { children: React.ReactNode }) {
               </NavLink>
             ))}
           </nav>
-          <div className="ml-auto flex items-center gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-1">
             <UpdateCheck />
             <kbd className="hidden rounded border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground md:inline">⌘K</kbd>
             <DarkToggle />

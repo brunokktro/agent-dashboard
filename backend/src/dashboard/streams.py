@@ -10,16 +10,29 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import os
-import pty
-import struct
-import termios
+import signal
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated
+
+# PTY-based terminal sessions are POSIX-only. On Windows (and any non-POSIX
+# platform) these modules do not exist; importing them unconditionally would
+# crash the whole backend at import time (ModuleNotFoundError: No module named
+# 'fcntl'), taking down every route including the portable log endpoints below
+# and /healthz. Guard them: the log tail/stream endpoints work everywhere, and
+# the terminal WebSocket degrades gracefully where no pty is available.
+try:
+    import fcntl
+    import pty
+    import struct
+    import termios
+
+    _HAS_PTY = True
+except ImportError:  # pragma: no cover - platform dependent
+    _HAS_PTY = False
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -122,13 +135,53 @@ def _kill(session_id: str) -> None:
     sess = _sessions.pop(session_id, None)
     if not sess:
         return
-    loop = asyncio.get_event_loop()
+    # Only a running loop can hold the reader; called outside one (reaper tests, CLI) there is
+    # nothing to remove, and get_event_loop() raises once another test closed the default loop.
     with contextlib.suppress(Exception):
-        loop.remove_reader(sess.fd)
+        asyncio.get_running_loop().remove_reader(sess.fd)
     with contextlib.suppress(OSError):
         os.close(sess.fd)
-    with contextlib.suppress(OSError, ProcessLookupError):
-        os.kill(sess.pid, 15)
+    # The PTY child is a session leader (pty.fork), so its pid is also its process group. HUP is
+    # what an interactive shell honours on hang-up (it ignores TERM) and it forwards HUP to its
+    # jobs; TERM covers a foreground command that ignores HUP. Then the child must be WAITED for:
+    # without it every closed session left a <defunct> entry under the backend (issue #9).
+    for sig in (signal.SIGHUP, signal.SIGTERM):
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.killpg(sess.pid, sig)
+    _finish(sess.pid, time.monotonic() + REAP_GRACE)
+
+
+REAP_GRACE = 2.0  # seconds a closed session gets to exit before SIGKILL
+_orphans: set[int] = set()  # killed children not reaped yet; the idle reaper retries them
+
+
+def _reaped(pid: int) -> bool:
+    """Non-blocking wait: True once the child is gone (reaped now or by someone else)."""
+    try:
+        return os.waitpid(pid, os.WNOHANG)[0] != 0
+    except ChildProcessError:
+        return True
+
+
+def _finish(pid: int, deadline: float, escalated: bool = False) -> None:
+    """Bounded reap that never blocks the event loop: poll every 100 ms until the deadline, then
+    SIGKILL the group once and give it one more grace period. Without a running loop (tests, CLI)
+    the same policy runs inline."""
+    if _reaped(pid):
+        _orphans.discard(pid)
+        return
+    if time.monotonic() >= deadline:
+        if escalated:
+            _orphans.add(pid)
+            return
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.killpg(pid, signal.SIGKILL)
+        deadline, escalated = time.monotonic() + REAP_GRACE, True
+    try:
+        asyncio.get_running_loop().call_later(0.1, _finish, pid, deadline, escalated)
+    except RuntimeError:
+        time.sleep(0.1)
+        _finish(pid, deadline, escalated)
 
 
 def _has_foreground_process(sess: PtySession) -> bool:
@@ -151,6 +204,9 @@ async def _reap_idle() -> None:
     while True:
         await asyncio.sleep(60)
         now = time.time()
+        for pid in list(_orphans):
+            if _reaped(pid):
+                _orphans.discard(pid)
         for sid, sess in list(_sessions.items()):
             if _should_reap(sess, now):
                 _kill(sid)
@@ -202,6 +258,20 @@ async def ws_terminal(ws: WebSocket, settings: Annotated[Settings, Depends(get_s
         await ws.close(code=1008)  # before accept: the handshake gets a 403
         return
     await ws.accept()
+
+    if not _HAS_PTY:
+        # No pty on this platform (e.g. Windows). The log endpoints above still
+        # work; only interactive terminal sessions are unavailable. Tell the
+        # client clearly and close instead of crashing on pty.fork().
+        with contextlib.suppress(Exception):
+            await ws.send_bytes(
+                b"\r\n\x1b[31m[terminal sessions are not supported on this platform]"
+                b"\x1b[0m\r\n"
+            )
+        with contextlib.suppress(Exception):
+            await ws.close(code=1011)
+        return
+
     if _reaper is None or _reaper.done():
         _reaper = asyncio.create_task(_reap_idle())
 
