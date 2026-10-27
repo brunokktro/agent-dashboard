@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""publish-main - publish the local `public` branch content as ONE commit on GitHub `main`.
+
+Why this exists: a `git push` to this public personal repo is blocked on the maintainer's machine, so
+`main` is written through the Git Data API, like `bin/make-release` writes `release`. The local clone
+and the remote are parallel histories with identical trees; base = current remote `main`, new tree =
+remote tree + the files that differ between `origin/main` and `public` (adds/mods as blobs, deletes
+as a null sha). Run `bin/make-release` after this one.
+
+    bin/publish-main "<commit message>"            # dry run: lists what would change
+    PUBLISH=1 bin/publish-main "<commit message>"  # writes, then verifies every blob
+
+Auth: GITHUB_TOKEN, or ~/.kiro/secrets/github.env (GITHUB_PERSONAL_ACCESS_TOKEN=...), as make-release.
+"""
+import base64
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+SECRETS_ENV = Path.home() / ".kiro/secrets/github.env"
+
+
+def token() -> str:
+    if os.environ.get("GITHUB_TOKEN"):
+        return os.environ["GITHUB_TOKEN"]
+    m = re.search(r'GITHUB_PERSONAL_ACCESS_TOKEN=["\']?([^"\'\n]+)', SECRETS_ENV.read_text())
+    if not m:
+        sys.exit(f"no GitHub token: set GITHUB_TOKEN or write it to {SECRETS_ENV}")
+    return m.group(1)
+
+
+def git(*a: str) -> str:
+    return subprocess.check_output(["git", "-C", str(REPO), *a], text=True).strip()
+
+
+def main() -> int:
+    if len(sys.argv) != 2 or not sys.argv[1].strip():
+        sys.exit(__doc__)
+    message = sys.argv[1]
+    slug = re.sub(r"(\.git)?$", "", re.sub(r"^.*github\.com[:/]", "", git("remote", "get-url", "origin")))
+    hdr = {"Authorization": f"Bearer {token()}", "Accept": "application/vnd.github+json",
+           "User-Agent": "publish-main", "Content-Type": "application/json"}
+
+    def api(path, method="GET", body=None):
+        req = urllib.request.Request(f"https://api.github.com{path}", method=method, headers=hdr,
+                                     data=json.dumps(body).encode() if body else None)
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read())
+
+    subprocess.run(["git", "-C", str(REPO), "fetch", "-q", "origin"], check=True)
+    remote_head = api(f"/repos/{slug}/git/ref/heads/main")["object"]["sha"]
+    if remote_head != git("rev-parse", "origin/main"):
+        sys.exit("origin/main is stale after fetch: refusing to build on an unknown base")
+    changes = [ln.split("\t", 1) for ln in git("diff", "--name-status", "--no-renames", "origin/main", "public").splitlines() if ln]
+    print(f"repo {slug} | base {remote_head[:8]} | {len(changes)} change(s)")
+    for status, path in changes:
+        print(f"  {status} {path}")
+    if not changes:
+        print("nothing to publish")
+        return 0
+    if os.environ.get("PUBLISH") != "1":
+        print("dry run (set PUBLISH=1)")
+        return 0
+    base = api(f"/repos/{slug}/git/commits/{remote_head}")
+    entries = []
+    for status, path in changes:
+        if status == "D":
+            entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
+            continue
+        p = REPO / path
+        mode = "100755" if os.access(p, os.X_OK) else "100644"
+        blob = api(f"/repos/{slug}/git/blobs", "POST",
+                   {"content": base64.b64encode(p.read_bytes()).decode(), "encoding": "base64"})
+        entries.append({"path": path, "mode": mode, "type": "blob", "sha": blob["sha"]})
+    tree = api(f"/repos/{slug}/git/trees", "POST", {"base_tree": base["tree"]["sha"], "tree": entries})
+    commit = api(f"/repos/{slug}/git/commits", "POST",
+                 {"message": message, "tree": tree["sha"], "parents": [remote_head]})
+    api(f"/repos/{slug}/git/refs/heads/main", "PATCH", {"sha": commit["sha"], "force": False})
+    print(f"published main at {commit['sha'][:8]}")
+    t = api(f"/repos/{slug}/git/trees/{commit['tree']['sha']}?recursive=1")
+    remote = {e["path"]: e["sha"] for e in t["tree"] if e["type"] == "blob"}
+    bad = [p for s, p in changes if s != "D" and remote.get(p) != git("rev-parse", f"public:{p}")]
+    print("verification:", "ALL MATCH" if not bad else f"MISMATCH: {bad}")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

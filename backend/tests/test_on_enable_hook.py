@@ -52,7 +52,7 @@ def _app(tmp_path: Path, *, frontend: bool, ui: bool, node_modules: bool) -> Pat
     return root
 
 
-def _enable(root: Path, tmp_path: Path) -> list[str]:
+def _enable(root: Path, tmp_path: Path, no_node: bool = False, expect_ok: bool = True) -> list[str]:
     bindir = tmp_path / "fakebin"
     bindir.mkdir(exist_ok=True)
     npm = bindir / "npm"
@@ -62,12 +62,13 @@ def _enable(root: Path, tmp_path: Path) -> list[str]:
     log.write_text("")
     node = shutil.which("node")
     assert node, "node is required to run the hook"
-    env = {"PATH": f"{bindir}:{Path(node).parent}:/usr/bin:/bin", "NPM_LOG": str(log),
+    path = f"{bindir}:/usr/bin:/bin" if no_node else f"{bindir}:{Path(node).parent}:/usr/bin:/bin"
+    env = {"PATH": path, "NPM_LOG": str(log),
            "UI_ENTRY": str(root / "ui" / APP["ui"]["entry"])}
     # KiroCrew runs the hook through /bin/bash from the app root.
     out = subprocess.run(["/bin/bash", "-c", HOOK], cwd=root, env=env, capture_output=True,
                          text=True, timeout=60)
-    assert out.returncode == 0, out.stdout + out.stderr
+    assert (out.returncode == 0) == expect_ok, out.stdout + out.stderr
     return [line for line in log.read_text().splitlines() if line]
 
 
@@ -99,3 +100,18 @@ def test_source_install_builds_both_and_declared_entry_exists(tmp_path) -> None:
 def test_existing_node_modules_skips_install(tmp_path) -> None:
     root = _app(tmp_path, frontend=False, ui=False, node_modules=True)
     assert _enable(root, tmp_path) == ["frontend run build", "ui run build"]
+
+
+def test_release_install_without_node_succeeds_and_runs_nothing(tmp_path) -> None:
+    """No Node on the target machine (catalog promise): a release install still enables."""
+    root = _app(tmp_path, frontend=True, ui=True, node_modules=False)
+    assert _enable(root, tmp_path, no_node=True) == []
+
+
+def test_without_node_a_missing_bundle_fails_instead_of_passing(tmp_path) -> None:
+    root = _app(tmp_path, frontend=True, ui=False, node_modules=False)
+    assert _enable(root, tmp_path, no_node=True, expect_ok=False) == []
+
+
+def test_shell_fallback_checks_the_declared_ui_entry() -> None:
+    assert f"ui/{APP['ui']['entry']}" in HOOK and "frontend/dist/index.html" in HOOK

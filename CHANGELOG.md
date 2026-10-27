@@ -5,6 +5,16 @@ User-facing changes per release. The commits behind each one are recorded in
 
 ## Unreleased
 
+## 3.3.5 - 2026-10-27
+
+### Fixed
+
+- **A release install enables again on a machine without Node.** 3.3.4 made `setup.onEnable` call
+  `node bin/ensure-bundles.mjs` unconditionally, which broke the store promise that the release needs no
+  Node on the target machine. The hook now runs the helper only when `node` is on `PATH`; without it, it
+  succeeds when both declared entries (`frontend/dist/index.html`, `ui/dist/index.mjs`) exist and fails
+  when one is missing. Contract tests cover both no-Node cases; the 3.3.4 hook fails them.
+
 ## 3.3.4 - 2026-10-24
 
 ### Changed

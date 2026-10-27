@@ -1,6 +1,6 @@
 {
   "name": "agent-dashboard",
-  "version": "3.3.4",
+  "version": "3.3.5",
   "displayName": "Agent Dashboard",
   "description": "Local-first observability for your AI agent fleet: run history and health scores, day-by-hour heatmaps, P50/P95/P99 durations, failure diagnosis with probable-cause hints, work queue, scheduler view, live logs and real terminals. Observes the ecosystem it is pointed at (runs.db, queue/, schedule.json) and never fabricates it.",
   "author": "brunokktro",
@@ -59,7 +59,7 @@
     "healthCheck": "/healthz"
   },
   "setup": {
-    "onEnable": "node bin/ensure-bundles.mjs",
+    "onEnable": "if command -v node >/dev/null 2>&1; then node bin/ensure-bundles.mjs; else [ -f frontend/dist/index.html ] && [ -f ui/dist/index.mjs ]; fi",
     "onEnableTimeout": 300,
     "configSchema": {
       "type": "object",
